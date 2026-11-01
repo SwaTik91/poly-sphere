@@ -1,210 +1,455 @@
-nsure_column("accounts", "is_guest", "INTEGER NOT NULL DEFAULT 0")
-        self._ensure_column("accounts", "best_endless", "INTEGER NOT NULL DEFAULT 0")
-        self._ensure_column("daily", "endless_wave", "INTEGER NOT NULL DEFAULT 0")
-        self._ensure_column("daily", "best_wave", "INTEGER NOT NULL DEFAULT 0")
-        self._ensure_column("daily", "chests", "INTEGER NOT NULL DEFAULT 0")
-        self._ensure_column("daily", "salvages", "INTEGER NOT NULL DEFAULT 0")
-        self._ensure_column("daily", "dust_buys", "INTEGER NOT NULL DEFAULT 0")
-        self._ensure_column("run_events", "damage_json", "TEXT")
-        self._ensure_column("accounts", "hangar_v2", "INTEGER NOT NULL DEFAULT 0")
-        self._ensure_column("accounts", "dust", "INTEGER NOT NULL DEFAULT 0")
-        self._ensure_column("account_parts", "polish", "INTEGER NOT NULL DEFAULT 0")
-        self.db.commit()
-        self._migrate_hangar_v2()
-        self._migrate_horde_steps()
-
-    def _ensure_column(self, table, column, definition):
-        columns = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
-        if column not in columns:
-            self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-
-    def register(self, name, password):
-        name = (name or "").strip()
-        if not name or len(name) > 24:
-            raise ValueError("Имя от 1 до 24 символов")
-        if not isinstance(password, str) or len(password) < 4:
-            raise ValueError("Пароль слишком короткий")
-        salt = secrets.token_bytes(16)
-        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 200000)
-        try:
-            cur = self.db.execute(
-                "INSERT INTO accounts (name, password, hangar_v2) VALUES (?, ?, 1)",
-                (name, f"{salt.hex()}${digest.hex()}"),
-            )
-            self.db.commit()
-        except sqlite3.IntegrityError as exc:
-            self.db.rollback()
-            raise ValueError("Имя уже занято") from exc
-        token = self._new_session(cur.lastrowid)
-        return {"token": token, "profile": self._profile(cur.lastrowid)}
-
-    def login(self, name, password):
-        row = self.db.execute(
-            "SELECT * FROM accounts WHERE name = ?",
-            ((name or "").strip(),),
-        ).fetchone()
-        if row is None or not _password_ok(row["password"], password or ""):
-            raise ValueError("Неверное имя или пароль")
-        token = self._new_session(row["id"])
-        return {"token": token, "profile": self._profile(row["id"])}
-
-    def account_for_token(self, token):
-        row = self._account_row(token)
-        return self._profile(row["id"])
-
-    def create_guest(self, ip, now=None):
-        now = now or datetime.now(timezone.utc)
-        day = moscow_day(now)
-        ip = (ip or "").strip() or "unknown"
-        self.db.execute("BEGIN IMMEDIATE")
-        try:
-            row = self.db.execute(
-                "SELECT count FROM guest_ips WHERE ip = ? AND day = ?",
-                (ip, day),
-            ).fetchone()
-            used = int(row["count"]) if row else 0
-            if used >= GUESTS_PER_IP_PER_DAY:
-                raise ValueError("Слишком много новых аккаунтов, попробуй позже")
-            for _ in range(20):
-                name = f"Гость-{secrets.randbelow(9000) + 1000}"
-                exists = self.db.execute(
-                    "SELECT 1 FROM accounts WHERE name = ?", (name,)
-                ).fetchone()
-                if not exists:
-                    break
-            else:
-                raise ValueError("Не вышло создать гостя")
-            salt = secrets.token_bytes(16)
-            digest = hashlib.pbkdf2_hmac("sha256", secrets.token_hex(16).encode(), salt, 200000)
-            cur = self.db.execute(
-                "INSERT INTO accounts (name, password, is_guest, hangar_v2) VALUES (?, ?, 1, 1)",
-                (name, f"{salt.hex()}${digest.hex()}"),
-            )
-            self.db.execute(
-                "INSERT INTO guest_ips (ip, day, count) VALUES (?, ?, 1) "
-                "ON CONFLICT(ip, day) DO UPDATE SET count = count + 1",
-                (ip, day),
-            )
-            account_id = cur.lastrowid
-            self.db.commit()
-        except Exception:
-            self.db.rollback()
-            raise
-        token = self._new_session(account_id)
-        return {"token": token, "profile": self._profile(account_id)}
-
-    def save_account(self, token, name, password):
-        row = self._account_row(token)
-        if not row["is_guest"]:
-            raise ValueError("Аккаунт уже сохранён")
-        name = (name or "").strip()
-        if not name or len(name) > 24:
-            raise ValueError("Имя от 1 до 24 символов")
-        if not isinstance(password, str) or len(password) < 4:
-            raise ValueError("Пароль слишком короткий")
-        salt = secrets.token_bytes(16)
-        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 200000)
-        try:
-            self.db.execute(
-                "UPDATE accounts SET name = ?, password = ?, is_guest = 0 WHERE id = ?",
-                (name, f"{salt.hex()}${digest.hex()}", row["id"]),
-            )
-            self.db.commit()
-        except sqlite3.IntegrityError as exc:
-            self.db.rollback()
-            raise ValueError("Имя уже занято") from exc
-        return {"profile": self._profile(row["id"])}
-
-    def claim_run(self, token, facts, now):
-        account_id = self._account_row(token)["id"]
-        run_id = str((facts or {}).get("runId") or "").strip()
-        if not run_id:
-            raise ValueError("Нет номера забега")
+not run_id:
+                raise ValueError("Нет номера забега")
+        season = season_for_date(moscow_date(now_dt))
         self.db.execute("BEGIN IMMEDIATE")
         try:
             existing = self.db.execute(
-                "SELECT response_json FROM claimed_runs WHERE account_id = ? AND run_id = ?",
+                "SELECT 1 FROM endless_claims WHERE account_id = ? AND level = ? AND wave = ?",
+                (account_id, level, wave),
+            ).fetchone()
+            granted = 0 if existing else payout
+            coins = 0
+            if not existing:
+                if not trusted:
+                    self._require_horde_step(account_id, run_id, level, wave, now_dt)
+                if horde_rule_for(moscow_day(now_dt)) == "coins":
+                    coins = HORDE_RULE_COINS
+                self.db.execute(
+                    "INSERT INTO endless_claims (account_id, level, wave) VALUES (?, ?, ?)",
+                    (account_id, level, wave),
+                )
+                self.db.execute(
+                    "UPDATE accounts SET crystals = crystals + ?, coins = coins + ? WHERE id = ?",
+                    (granted, coins, account_id),
+                )
+                if run_id and not trusted:
+                    self._advance_horde_run(account_id, run_id, level, wave, now_dt)
+            step = wave - 10 if wave >= HORDE_FIRST_WAVE else wave
+            self._record_endless_progress(account_id, step, season, now_dt)
+            profile = self._profile(account_id)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        return {"granted": granted, "crystals": profile["crystals"], "coins": coins, "profile": profile}
+
+    def _require_horde_step(self, account_id, run_id, level, wave, now_dt):
+        started = self.db.execute(
+            "SELECT start_level FROM run_events WHERE account_id = ? AND run_id = ?",
+            (account_id, run_id),
+        ).fetchone()
+        if started is None:
+            raise ValueError("Забег не начат")
+        cleared = self.db.execute(
+            "SELECT 1 FROM run_level_clears WHERE account_id = ? AND run_id = ? AND level = ?",
+            (account_id, run_id, level),
+        ).fetchone()
+        if cleared is None:
+            raise ValueError("Уровень ещё не засчитан")
+        horde = self.db.execute(
+            "SELECT level, next_wave, last_claim_at FROM horde_runs WHERE account_id = ? AND run_id = ?",
+            (account_id, run_id),
+        ).fetchone()
+        if horde is None:
+            if wave != HORDE_FIRST_WAVE:
+                raise ValueError("Волна ещё не открыта")
+            return
+        if int(horde["level"]) != int(level):
+            raise ValueError("Некорректный уровень")
+        if int(horde["next_wave"]) != int(wave):
+            raise ValueError("Волна ещё не открыта")
+        if now_dt < _parse_time(horde["last_claim_at"]) + HORDE_CLAIM_GAP:
+            raise ValueError("Рано для следующей волны")
+
+    def _advance_horde_run(self, account_id, run_id, level, wave, now_dt):
+        self.db.execute(
+            """
+            INSERT INTO horde_runs (account_id, run_id, level, next_wave, last_claim_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(account_id, run_id) DO UPDATE SET
+                next_wave = excluded.next_wave,
+                last_claim_at = excluded.last_claim_at
+            """,
+            (account_id, run_id, int(level), int(wave) + 1, now_dt.isoformat()),
+        )
+
+    def note_level_clear(self, token, run_id, level, now=None):
+        account_id = self._account_row(token)["id"]
+        run_id = str(run_id or "").strip()
+        if not run_id:
+            raise ValueError("Нет номера забега")
+        try:
+            level = int(level)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Некорректный уровень") from exc
+        if level not in range(1, MAX_LEVEL + 1):
+            raise ValueError("Некорректный уровень")
+        now_dt = _parse_time(now)
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            started = self.db.execute(
+                "SELECT start_level FROM run_events WHERE account_id = ? AND run_id = ?",
                 (account_id, run_id),
             ).fetchone()
-            if existing:
+            if started is None:
+                raise ValueError("Забег не начат")
+            start_level = int(started["start_level"] or 1)
+            if level < start_level:
+                raise ValueError("Некорректный уровень")
+            already = self.db.execute(
+                "SELECT 1 FROM run_level_clears WHERE account_id = ? AND run_id = ? AND level = ?",
+                (account_id, run_id, level),
+            ).fetchone()
+            if already:
+                profile = self._profile(account_id)
                 self.db.commit()
-                return json.loads(existing["response_json"])
-            kills, levels_cleared, ended_level, ended_wave, waves_cleared, started_level = _validate_facts(facts)
-            row = self.db.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
-            full_campaign = started_level == 1 and levels_cleared >= 3
-            coin_gain = coin_reward(kills, ended_level, ended_wave, full_campaign, started_level)
-            xp_gain = xp_reward(kills, waves_cleared, levels_cleared)
-            new_level, new_xp, level_reward = apply_account_xp(row["account_level"], row["xp"], xp_gain)
-            already = {
-                item["level"]
-                for item in self.db.execute("SELECT level FROM cleared_levels WHERE account_id = ?", (account_id,))
-            }
-            new_levels, clear_crystals, autos = first_clear_crystals(already, levels_cleared, started_level)
-            claimed = {
-                item["achievement_id"]
-                for item in self.db.execute(
-                    "SELECT achievement_id FROM achievements WHERE account_id = ? AND claimed = 1",
-                    (account_id,),
-                )
-            }
-            auto_crystals = 0
-            for achievement_id in autos:
-                if achievement_id in claimed:
-                    continue
+                return {"ok": True, "profile": profile}
+            if level > start_level:
+                previous = self.db.execute(
+                    "SELECT 1 FROM run_level_clears WHERE account_id = ? AND run_id = ? AND level = ?",
+                    (account_id, run_id, level - 1),
+                ).fetchone()
+                if previous is None:
+                    raise ValueError("Уровень ещё не засчитан")
+            last = self.db.execute(
+                """
+                SELECT cleared_at FROM run_level_clears
+                WHERE account_id = ? AND run_id = ?
+                ORDER BY cleared_at DESC LIMIT 1
+                """,
+                (account_id, run_id),
+            ).fetchone()
+            if last and now_dt < _parse_time(last["cleared_at"]) + LEVEL_NOTE_GAP:
+                raise ValueError("Рано для следующего уровня")
+            self.db.execute(
+                "INSERT INTO run_level_clears (account_id, run_id, level, cleared_at) VALUES (?, ?, ?, ?)",
+                (account_id, run_id, level, now_dt.isoformat()),
+            )
+            profile = self._profile(account_id)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        return {"ok": True, "profile": profile}
+
+    def _record_endless_progress(self, account_id, wave, season, now):
+        wave = int(wave)
+        if isinstance(now, str):
+            now = datetime.fromisoformat(now)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        self.db.execute(
+            "UPDATE accounts SET best_endless = MAX(best_endless, ?) WHERE id = ?",
+            (wave, account_id),
+        )
+        day = moscow_day(now)
+        self.db.execute(
+            "INSERT OR IGNORE INTO daily (account_id, day) VALUES (?, ?)",
+            (account_id, day),
+        )
+        self.db.execute(
+            "UPDATE daily SET endless_wave = MAX(endless_wave, ?) WHERE account_id = ? AND day = ?",
+            (wave, account_id, day),
+        )
+        self.db.execute(
+            """
+            INSERT INTO endless_leaderboard (account_id, season, best_wave, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(account_id, season) DO UPDATE SET
+                best_wave = MAX(best_wave, excluded.best_wave),
+                updated_at = CASE
+                    WHEN excluded.best_wave > endless_leaderboard.best_wave THEN excluded.updated_at
+                    ELSE endless_leaderboard.updated_at
+                END
+            """,
+            (account_id, season, wave, now.isoformat()),
+        )
+
+    def leaderboard(self, token, now=None):
+        account_id = self._account_row(token)["id"]
+        if now is None:
+            now = datetime.now(timezone.utc)
+        d = moscow_date(now)
+        season = season_for_date(d)
+        rows = self.db.execute(
+            """
+            SELECT a.name AS name, l.best_wave AS best_wave, l.updated_at AS updated_at, l.account_id AS account_id
+            FROM endless_leaderboard l
+            JOIN accounts a ON a.id = l.account_id
+            WHERE l.season = ? AND l.best_wave > 0
+            ORDER BY l.best_wave DESC, l.updated_at ASC
+            """,
+            (season,),
+        ).fetchall()
+        top = [
+            {"rank": index + 1, "name": row["name"], "wave": int(row["best_wave"])}
+            for index, row in enumerate(rows[:LEADERBOARD_SIZE])
+        ]
+        me = None
+        for index, row in enumerate(rows):
+            if row["account_id"] == account_id:
+                me = {"rank": index + 1, "wave": int(row["best_wave"])}
+                break
+        return {
+            "season": {
+                "id": season,
+                "label": season_label(season),
+                "daysLeft": season_days_left(d),
+            },
+            "top": top,
+            "me": me,
+        }
+
+    def buy_reroll(self, token, run_id, offer_level):
+        run_id = str(run_id or "").strip()
+        try:
+            offer_level = int(offer_level)
+        except (TypeError, ValueError):
+            raise ValueError("Некорректный реролл")
+        if not run_id or offer_level < 1:
+            raise ValueError("Некорректный реролл")
+        account_id = self._account_row(token)["id"]
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT used FROM reroll_counts WHERE account_id = ? AND run_id = ? AND offer_level = ?",
+                (account_id, run_id, offer_level),
+            ).fetchone()
+            used = int(row["used"]) if row else 0
+            price = reroll_price(used)
+            if price is None:
+                raise ValueError("Реролл больше недоступен")
+            account = self.db.execute("SELECT coins, crystals FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            if price["kind"] == "coins" and account["coins"] < price["amount"]:
+                raise ValueError("Не хватает монет")
+            if price["kind"] == "crystals" and account["crystals"] < price["amount"]:
+                raise ValueError("Не хватает кристаллов")
+            if price["kind"] == "coins":
+                self.db.execute("UPDATE accounts SET coins = coins - ? WHERE id = ?", (price["amount"], account_id))
+            elif price["kind"] == "crystals":
                 self.db.execute(
-                    "INSERT INTO achievements (account_id, achievement_id, claimed) VALUES (?, ?, 1)",
-                    (account_id, achievement_id),
+                    "UPDATE accounts SET crystals = crystals - ? WHERE id = ?",
+                    (price["amount"], account_id),
                 )
-                auto_crystals += achievement_crystals(achievement_id)
-                claimed.add(achievement_id)
-            for level in new_levels:
-                self.db.execute(
-                    "INSERT INTO cleared_levels (account_id, level) VALUES (?, ?)",
-                    (account_id, level),
-                )
-            crystal_gain = clear_crystals + auto_crystals + level_reward["crystals"]
-            coin_gain += level_reward["coins"]
-            dust_gain = level_reward["dust"]
-            kill_count = sum(kills.values())
+            used += 1
             self.db.execute(
                 """
-                UPDATE accounts
-                SET coins = coins + ?, crystals = crystals + ?, dust = dust + ?, xp = ?, account_level = ?, kills_total = kills_total + ?
-                WHERE id = ?
+                INSERT INTO reroll_counts (account_id, run_id, offer_level, used)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(account_id, run_id, offer_level) DO UPDATE SET used = excluded.used
                 """,
-                (coin_gain, crystal_gain, dust_gain, new_xp, new_level, kill_count, account_id),
+                (account_id, run_id, offer_level, used),
             )
-            self._add_daily(account_id, now, kill_count, waves_cleared, levels_cleared)
-            account_grant = None
-            if new_level > int(row["account_level"]):
-                account_grant = {"level": new_level, **level_reward}
-            payload = {
-                "granted": {
-                    "coins": coin_gain,
-                    "xp": xp_gain,
-                    "crystals": crystal_gain,
-                    "dust": dust_gain,
-                    "account": account_grant,
-                },
-                "profile": self._profile(account_id),
-            }
-            encoded = json.dumps(payload, ensure_ascii=False)
+            profile = self._profile(account_id)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        return {"used": used, "price": price, "next": reroll_price(used), "profile": profile}
+
+    def buy_hangar(self, token, key):
+        if key not in HANGAR_TREE:
+            raise ValueError("Неизвестное улучшение")
+        return self._buy_hangar_node(token, key)
+
+    def _hangar_node_level(self, account_id, key):
+        node_row = self.db.execute(
+            "SELECT level FROM account_hangar_nodes WHERE account_id = ? AND node = ?",
+            (account_id, key),
+        ).fetchone()
+        return int(node_row["level"]) if node_row else 0
+
+    def _buy_hangar_node(self, token, key):
+        account_id = self._account_row(token)["id"]
+        spec = HANGAR_TREE[key]
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            requires = spec["requires"]
+            if requires:
+                req_node, req_level = requires
+                if self._hangar_node_level(account_id, req_node) < req_level:
+                    raise ValueError("Ветка ещё закрыта")
+            level = self._hangar_node_level(account_id, key)
+            if level >= spec["max"]:
+                raise ValueError("Уже максимум")
+            price = hangar_node_price(key, level)
+            if row["coins"] < price:
+                raise ValueError("Не хватает монет")
             self.db.execute(
-                "INSERT INTO claimed_runs (account_id, run_id, response_json) VALUES (?, ?, ?)",
-                (account_id, run_id, encoded),
+                "UPDATE accounts SET coins = coins - ?, hangar_buys = hangar_buys + 1 WHERE id = ?",
+                (price, account_id),
+            )
+            self.db.execute(
+                """
+                INSERT INTO account_hangar_nodes (account_id, node, level)
+                VALUES (?, ?, 1)
+                ON CONFLICT(account_id, node) DO UPDATE SET level = level + 1
+                """,
+                (account_id, key),
             )
             self.db.commit()
         except Exception:
             self.db.rollback()
             raise
-        return json.loads(encoded)
+        return {"profile": self._profile(account_id)}
 
-    def claim_endless(self, token, level, wave, now=None, run_id=None, trusted=False):
+    def exchange_dust(self, token):
         account_id = self._account_row(token)["id"]
-        payout = endless_crystals(level, wave)
-        now_dt = _parse_time(now)
-        run_id = str(run_id or "").strip()
-        if not trusted:
-            if wave < HORDE_FIRST_WAVE:
-                raise ValueError("Некорректная волна")
-            if 
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute("SELECT coins FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            if int(row["coins"]) < DUST_PACK_COINS:
+                raise ValueError("Не хватает монет")
+            self.db.execute(
+                "UPDATE accounts SET coins = coins - ?, dust = dust + ? WHERE id = ?",
+                (DUST_PACK_COINS, DUST_PACK_DUST, account_id),
+            )
+            self._bump_daily(account_id, "dust_buys")
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        return {"profile": self._profile(account_id), "dust": DUST_PACK_DUST}
+
+    def buy_shop(self, token, kind, weapon=None):
+        account_id = self._account_row(token)["id"]
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            weapons = self._weapons(account_id)
+            updated = buy_crystal_item(
+                {
+                    "crystals": row["crystals"],
+                    "crit_bonus": row["crit_bonus"],
+                    "weapons": weapons,
+                    "fourth_card": bool(row["fourth_card"]),
+                },
+                kind,
+                weapon,
+            )
+            self.db.execute(
+                "UPDATE accounts SET crystals = ?, crit_bonus = ?, fourth_card = ? WHERE id = ?",
+                (updated["crystals"], updated["crit_bonus"], int(updated["fourth_card"]), account_id),
+            )
+            for item in updated["weapons"]:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO owned_weapons (account_id, weapon) VALUES (?, ?)",
+                    (account_id, item),
+                )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        return {"profile": self._profile(account_id)}
+
+    def _weapon_loadout(self, account_id, row=None):
+        if row is None:
+            row = self.db.execute(
+                "SELECT weapon_loadout_json FROM accounts WHERE id = ?", (account_id,)
+            ).fetchone()
+        raw = row["weapon_loadout_json"] if row is not None else None
+        try:
+            slots = json.loads(raw) if raw else list(DEFAULT_WEAPON_LOADOUT)
+        except (TypeError, ValueError):
+            slots = list(DEFAULT_WEAPON_LOADOUT)
+        return self._sanitize_weapon_loadout(account_id, slots)
+
+    def _sanitize_weapon_loadout(self, account_id, loadout):
+        owned = set(self._weapons(account_id)) | set(FREE_WEAPONS)
+        slots = [None] * WEAPON_SLOTS
+        slots[0] = "gun"
+        seen = {"gun"}
+        idx = 1
+        for item in loadout or []:
+            if idx >= WEAPON_SLOTS:
+                break
+            if item in (None, "", "gun"):
+                continue
+            if item not in ALL_WEAPONS:
+                raise ValueError("Нет такого орудия")
+            if item not in owned:
+                raise ValueError("Орудие не куплено")
+            if item in seen:
+                continue
+            slots[idx] = item
+            seen.add(item)
+            idx += 1
+        return slots
+
+    def set_weapon_loadout(self, token, loadout):
+        account_id = self._account_row(token)["id"]
+        if not isinstance(loadout, list):
+            raise ValueError("Некорректный лоадаут")
+        slots = self._sanitize_weapon_loadout(account_id, loadout)
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            self.db.execute(
+                "UPDATE accounts SET weapon_loadout_json = ? WHERE id = ?",
+                (json.dumps(slots, ensure_ascii=False), account_id),
+            )
+            profile = self._profile(account_id)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        return {"profile": profile}
+
+    def open_chest(self, token, rng, request_id=None, roller=None, family=None):
+        account_id = self._account_row(token)["id"]
+        request_id = str(request_id or "").strip()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            if request_id:
+                saved = self.db.execute(
+                    "SELECT response_json FROM chest_requests WHERE account_id = ? AND request_id = ?",
+                    (account_id, request_id),
+                ).fetchone()
+                if saved:
+                    self.db.commit()
+                    return json.loads(saved["response_json"])
+            row = self.db.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            if row["crystals"] < 20:
+                raise ValueError("Не хватает кристаллов")
+            pity = chest_pity_rarity(row["chests_opened"], rng())
+            owned = list(self._owned_weapon_families(account_id))
+            if pity:
+                family = str(family or "").strip().lower()
+                allowed = {"common", *owned}
+                if family not in allowed:
+                    raise ValueError("Выберите семью")
+            else:
+                family = None
+            part_id = secrets.token_hex(16)
+            if roller is None:
+                part = parts_bridge.roll_part(rng, owned, part_id, pity, family)
+            else:
+                part = roller(rng, owned, pity, family)
+                if not part.get("id"):
+                    part = {**part, "id": part_id}
+                if pity:
+                    part = {**part, "rarity": pity}
+            self._insert_part(account_id, part)
+            self.db.execute(
+                "UPDATE accounts SET crystals = crystals - 20, chests_opened = chests_opened + 1 WHERE id = ?",
+                (account_id,),
+            )
+            self._bump_daily(account_id, "chests")
+            drop = {
+                "kind": "part",
+                "pity": bool(pity),
+                "part": {
+                    "id": part["id"],
+                    "base": part["base"],
+                    "baseName": part.get("baseName") or part.get("base_name") or "",
+                    "family": part.get("family"),
+                    "rarity": part["rarity"],
+                    "affixes": part.get("affixes") or [],
+                },
+            }
+            payload = {"drop": drop, "profile": self._profile(account_id)}
+            encoded = json.dumps(payload, ensure_ascii=False)
+            if request_id:
+                self.db.execute(
+                    "INSERT INTO chest_requests (account_id, request_id, response_json) VALUES (?, ?, ?)",
+                    (account_id, r
