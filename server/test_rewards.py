@@ -1,0 +1,156 @@
+import unittest
+from server.rewards import (
+    achievement_crystals,
+    apply_account_xp,
+    buy_crystal_item,
+    coin_reward,
+    daily_tasks,
+    endless_crystals,
+    reroll_price,
+    first_clear_crystals,
+    hangar_price,
+    validate_endless,
+    ready_achievements,
+    roll_chest,
+    season_days_left,
+    season_for_date,
+    season_label,
+    xp_reward,
+)
+
+
+class RewardTests(unittest.TestCase):
+    def test_reroll_ladder_is_free_then_coins_then_crystals(self):
+        self.assertEqual(reroll_price(0), {"kind": "free", "amount": 0})
+        self.assertEqual(reroll_price(1)["kind"], "free")
+        self.assertEqual([reroll_price(i)["amount"] for i in range(2, 7)], [1000, 2000, 3000, 4000, 5000])
+        self.assertEqual([reroll_price(i)["amount"] for i in range(7, 14)], [1, 2, 3, 4, 5, 10, 20])
+        self.assertIsNone(reroll_price(14))
+    def test_coins_add_kill_table_progress_and_win_bonus(self):
+        kills = {"circle": 2, "triangle": 0, "square": 1, "hex": 0, "diamond": 0, "split": 1, "boss": 1}
+        self.assertEqual(coin_reward(kills, 3, 6, True), 2 * 2 + 3 + 1 + 28 + 12 + 6 + 40)
+
+    def test_death_has_no_win_bonus(self):
+        kills = {"circle": 1, "triangle": 0, "square": 0, "hex": 0, "diamond": 0, "split": 0, "boss": 0}
+        self.assertEqual(coin_reward(kills, 2, 3, False), 2 + 6 + 3)
+
+    def test_xp_ignores_anything_but_battle_counts(self):
+        kills = {"circle": 4, "boss": 1}
+        self.assertEqual(xp_reward(kills, 6, 1), 5 + 60 + 40)
+
+    def test_account_level_grants_four_crystals_per_level(self):
+        self.assertEqual(apply_account_xp(1, 70, 20), (2, 10, 4))
+
+    def test_first_clear_pays_once_and_names_auto_achievements(self):
+        levels, crystals, autos = first_clear_crystals(set(), 3)
+        self.assertEqual(levels, [1, 2, 3])
+        self.assertEqual(crystals, 6 + 6 + 6)
+        self.assertEqual(autos, ["first_boss", "three_levels"])
+        again, crystals2, autos2 = first_clear_crystals({1, 2, 3}, 3)
+        self.assertEqual((again, crystals2, autos2), ([], 0, []))
+
+    def test_finishing_a_chapter_grants_the_chapter_bonus_and_achievement(self):
+        levels, crystals, autos = first_clear_crystals({1, 2, 3, 4}, 1, 5)
+        self.assertEqual(levels, [5])
+        self.assertEqual(crystals, 6 + 20)
+        self.assertIn("chapter_1", autos)
+        second = first_clear_crystals({1, 2, 3, 4, 5, 6, 7, 8, 9}, 1, 10)
+        self.assertEqual(second[0], [10])
+        self.assertEqual(second[1], 10 + 30)
+        self.assertIn("chapter_2", second[2])
+
+    def test_endless_wave_pays_five_and_rejects_a_bad_level(self):
+        self.assertEqual(endless_crystals(1, 1), 5)
+        self.assertEqual(endless_crystals(3, 40), 5)
+        self.assertEqual(validate_endless(2, 7), (2, 7))
+        with self.assertRaises(ValueError):
+            endless_crystals(0, 1)
+        with self.assertRaises(ValueError):
+            validate_endless(41, 1)
+
+    def test_later_level_pays_only_after_earlier_ones(self):
+        levels, crystals, autos = first_clear_crystals(set(), 1, 3)
+        self.assertEqual((levels, crystals, autos), ([], 0, []))
+        levels, crystals, autos = first_clear_crystals({1}, 2, 2)
+        self.assertEqual(levels, [2, 3])
+        self.assertEqual(crystals, 6 + 6)
+        self.assertEqual(autos, ["three_levels"])
+
+
+class MetaTests(unittest.TestCase):
+    def test_daily_tasks_mark_done_and_claimed(self):
+        tasks = daily_tasks(40, True, False, {"wave3"})
+        by_id = {task["id"]: task for task in tasks}
+        self.assertEqual(by_id["wave3"], {"id": "wave3", "crystals": 2, "done": True, "claimed": True})
+        self.assertEqual(by_id["kills40"]["done"], True)
+        self.assertEqual(by_id["kills40"]["claimed"], False)
+        self.assertEqual(by_id["level"]["done"], False)
+
+    def test_ready_achievements_skip_claimed(self):
+        stats = {"kills": 100, "cleared_levels": {1}, "hangar_buys": 1, "chests": 0, "best_endless": 0}
+        ready = ready_achievements(stats, {"first_blood"})
+        self.assertEqual(ready, ["first_boss", "kills_100", "hangar"])
+
+    def test_extended_dailies_track_kills_and_horde(self):
+        tasks = daily_tasks(150, True, True, set(), endless_wave=8)
+        by_id = {task["id"]: task for task in tasks}
+        self.assertTrue(by_id["kills150"]["done"])
+        self.assertTrue(by_id["endless8"]["done"])
+        self.assertTrue(by_id["level"]["done"])
+        low = {task["id"]: task for task in daily_tasks(149, False, False, set(), endless_wave=7)}
+        self.assertFalse(low["kills150"]["done"])
+        self.assertFalse(low["endless8"]["done"])
+
+    def test_extended_achievements_reward_horde_and_grind(self):
+        stats = {"kills": 2000, "cleared_levels": {1, 3}, "hangar_buys": 10, "chests": 10, "best_endless": 25}
+        ready = ready_achievements(stats, set())
+        for wanted in ("kills_2000", "hangar_10", "chest_10", "endless_10", "endless_25"):
+            self.assertIn(wanted, ready)
+        self.assertEqual(achievement_crystals("endless_25"), 20)
+
+    def test_seasons_are_monthly_with_days_left(self):
+        import datetime
+
+        june = datetime.date(2026, 6, 15)
+        july = datetime.date(2026, 7, 1)
+        self.assertEqual(season_for_date(july) - season_for_date(june), 1)
+        self.assertEqual(season_label(season_for_date(datetime.date(2026, 9, 5))), "2026-09")
+        self.assertEqual(season_days_left(datetime.date(2026, 9, 28)), 3)
+
+    def test_achievement_amounts(self):
+        self.assertEqual(achievement_crystals("three_levels"), 20)
+        self.assertEqual(achievement_crystals("chest"), 3)
+
+    def test_hangar_price_matches_existing_curve(self):
+        self.assertEqual(hangar_price(0), 40)
+        self.assertEqual(hangar_price(1), 66)
+
+    def test_shop_rejects_a_sixth_crit_and_a_repeat_weapon(self):
+        profile = {"crystals": 100, "crit_bonus": 10, "weapons": ["laser"], "fourth_card": False}
+        with self.assertRaises(ValueError):
+            buy_crystal_item(profile, "crit")
+        with self.assertRaises(ValueError):
+            buy_crystal_item(profile, "weapon", "laser")
+
+    def test_shop_buys_fourth_card_once(self):
+        profile = {"crystals": 50, "crit_bonus": 0, "weapons": [], "fourth_card": False}
+        bought = buy_crystal_item(profile, "fourth_card")
+        self.assertEqual(bought["crystals"], 0)
+        self.assertEqual(bought["fourth_card"], True)
+
+    def test_chest_omits_crit_at_the_cap_and_queues_a_known_card(self):
+        class Seq:
+            def __init__(self, values):
+                self.values = list(values)
+
+            def randrange(self, count):
+                return self.values.pop(0)
+
+        profile = {"crit_bonus": 10}
+        drop = roll_chest(profile, Seq([3, 1]))
+        self.assertEqual(drop["kind"], "card")
+        self.assertIn(drop["card"], ["Калибр", "Темп", "Сервопривод", "Пластины"])
+
+
+if __name__ == "__main__":
+    unittest.main()
