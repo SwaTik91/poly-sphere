@@ -140,3 +140,4 @@ for (const start of [15, 20, 30, 36, 40]) {
   const detail = runs.map((r) => (r.cleared ? "clear" : `die ${r.reached} w${r.reachedWave}`)).join(", ");
   console.log(`уровень ${String(start).padStart(2)}: пройдено ${clears}/3  [${detail}]`);
 }
+
