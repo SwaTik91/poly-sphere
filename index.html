@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#05060c" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>PolySpire</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=Orbitron:wght@600;800&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game"></canvas>
+
+      <div id="hud" class="hidden">
+        <div class="hud-top">
+          <div class="hud-chip">
+            <span id="hud-wave-label">ВОЛНА</span>
+            <b id="hud-wave">1</b>
+          </div>
+          <div class="hud-chip">
+            <span>УРОВЕНЬ</span>
+            <b id="hud-chapter">1</b>
+          </div>
+          <div class="hud-chip gold">
+            <span>МОНЕТЫ</span>
+            <b id="hud-coins">0</b>
+          </div>
+          <div class="hud-chip">
+            <span>КРИТ</span>
+            <b id="hud-crit">8%</b>
+          </div>
+        </div>
+        <div id="hud-horde" class="hud-horde hidden"></div>
+        <div id="hud-boss" class="hud-boss hidden">
+          <b id="hud-boss-name">Босс</b>
+          <div class="boss-bar"><i id="hud-boss-hp"></i></div>
+          <span id="hud-boss-rule" class="sub"></span>
+        </div>
+        <div id="core-status" class="core-status">
+          <div class="core-bar hp"><i id="hud-hp"></i><span id="hud-lives" class="hidden"></span></div>
+          <div class="core-bar drive"><span id="hud-drive-label">ЗАРЯД</span><i id="hud-drive"></i></div>
+        </div>
+        <div id="combo" class="combo hidden">
+          <em>РЕЗОНАНС</em>
+          <strong id="combo-text">△ × 3</strong>
+        </div>
+        <div id="weapons" class="weapons"></div>
+        <div class="hud-bottom">
+          <div class="hud-controls">
+            <button id="btn-surrender" class="hud-btn surrender-btn" type="button">Сдаться</button>
+            <div class="ctrl-group">
+              <button id="btn-build" class="hud-btn build-btn" type="button">Билд</button>
+              <button id="btn-speed" class="hud-btn" type="button">×1</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="build-overlay" class="build-overlay hidden">
+        <div class="build-card">
+          <h2>СБОРКА</h2>
+          <div id="build-summary" class="build-summary"></div>
+          <div id="build-weapons" class="build-weapons"></div>
+          <div id="build-synergies" class="build-synergies"></div>
+          <div id="build-parts" class="build-parts"></div>
+          <button class="btn" id="btn-build-resume">ПРОДОЛЖИТЬ</button>
+        </div>
+      </div>
+
+      <div id="hub-top" class="hub-top hidden">
+        <div class="hub-stats">
+          <span class="hub-pill">Ур. <b id="menu-account">1</b></span>
+          <span class="hub-pill gold"><i aria-hidden="true">●</i><b id="menu-coins">0</b></span>
+          <span class="hub-pill cyan"><i aria-hidden="true">◆</i><b id="menu-crystals">0</b></span>
+        </div>
+        <button id="btn-gear" class="gear-btn" type="button" aria-label="Настройки">⚙</button>
+      </div>
+
+      <nav id="tabbar" class="tabbar hidden">
+        <button class="tab" type="button" data-tab="play"><span class="tab-ico" aria-hidden="true">⚔</span><span class="tab-label">Бой</span></button>
+        <button class="tab" type="button" data-tab="hangar"><span class="tab-ico" aria-hidden="true">⬡</span><span class="tab-label">Ангар</span><i class="badge hidden" id="badge-hangar"></i></button>
+        <button class="tab" type="button" data-tab="parts"><span class="tab-ico" aria-hidden="true">▦</span><span class="tab-label">Инвентарь</span><i class="badge hidden" id="badge-parts"></i></button>
+        <button class="tab" type="button" data-tab="shop"><span class="tab-ico" aria-hidden="true">◈</span><span class="tab-label">Магазин</span><i class="badge hidden" id="badge-shop"></i></button>
+        <button class="tab" type="button" data-tab="tasks"><span class="tab-ico" aria-hidden="true">✦</span><span class="tab-label">Задания</span><i class="badge hidden" id="badge-tasks"></i></button>
+      </nav>
+
+      <div id="screen-login" class="screen">
+        <div class="logo">
+          <div class="logo-mark" aria-hidden="true"></div>
+          <h1>POLY<span>SPIRE</span></h1>
+          <p>Аккаунт хранит монеты и кристаллы.</p>
+        </div>
+        <input class="field" id="login-name" maxlength="24" autocomplete="username" placeholder="Имя" />
+        <input class="field" id="login-password" type="password" maxlength="64" autocomplete="current-password" placeholder="Пароль" />
+        <p id="login-error" class="sub error"></p>
+        <button class="btn primary" id="btn-login">ВОЙТИ</button>
+        <button class="btn" id="btn-register">СОЗДАТЬ АККАУНТ</button>
+      </div>
+
+      <div id="screen-menu" class="screen hidden scroll tab-panel">
+        <div class="logo">
+          <div class="logo-mark" aria-hidden="true"></div>
+          <h1>POLY<span>SPIRE</span></h1>
+          <p>Грань. Ядро. Удержи.</p>
+        </div>
+        <button class="btn primary big-play" id="btn-play">В БОЙ · УРОВЕНЬ 1</button>
+        <div class="account-track" id="account-track">
+          <div class="account-track-head">
+            <b id="account-level-label">Ур. 1</b>
+            <span id="account-next">Дальше: +4 кристалла</span>
+          </div>
+          <div class="account-bar" aria-hidden="true"><i id="account-xp-fill"></i></div>
+          <div class="account-xp" id="account-xp">0 / 80</div>
+          <div class="account-steps" id="account-steps"></div>
+        </div>
+        <p class="horde-rule-line" id="menu-horde-rule"></p>
+        <button class="collection-notice hidden" id="btn-collection-notice" type="button"></button>
+        <button class="btn ghost" id="btn-pick-level">ВЫБРАТЬ УРОВЕНЬ</button>
+        <button class="btn" id="btn-coop" hidden>ВМЕСТЕ</button>
+        <button class="btn ghost" id="btn-dev" hidden>ТЕСТ</button>
+      </div>
+
+      <div id="screen-levels" class="screen hidden scroll">
+        <h2>УРОВНИ</h2>
+        <p class="sub">Каждая глава — 5 уровней. За главу дают кристаллы.</p>
+        <div class="upgrade-list" id="level-list"></div>
+        <button class="btn" id="btn-levels-back">НАЗАД</button>
+      </div>
+
+      <div id="screen-coop" class="screen hidden">
+        <h2>ВМЕСТЕ</h2>
+        <p class="sub">Один уровень на двоих. Пушки слева и справа, на одной линии.</p>
+        <p id="coop-wait" class="sub">Создай комнату и отправь код другу.</p>
+        <p id="coop-code" class="logo">----</p>
+        <button class="btn primary" id="btn-coop-host">СОЗДАТЬ</button>
+        <input id="coop-join-code" maxlength="4" placeholder="КОД ДРУГА" autocomplete="off" />
+        <button class="btn" id="btn-coop-join">ВОЙТИ</button>
+        <button class="btn" id="btn-coop-back">НАЗАД</button>
+      </div>
+
+      <div id="screen-hangar" class="screen hidden scroll tab-panel">
+        <h2>АНГАР</h2>
+        <p class="sub">Постоянные усилители между вылетами.</p>
+        <div class="coins-line">Доступно: <b id="hangar-coins">0</b></div>
+        <div class="loadout-block">
+          <h3 class="loadout-title">Орудия в бою</h3>
+          <p class="sub">До 5 орудий на старте. Пулемёт закреплён. Новые орудия покупаются в магазине.</p>
+          <div id="weapon-slots" class="cell-grid weapon-slots"></div>
+          <h3 class="loadout-title">Арсенал</h3>
+          <div id="weapon-inventory" class="cell-grid weapon-inv"></div>
+        </div>
+        <div class="upgrade-list" id="hangar-list"></div>
+      </div>
+
+      <div id="screen-dev" class="screen hidden scroll">
+        <h2>ТЕСТ</h2>
+        <p class="sub">Для проверки. Кристаллы и запчасти падают на этот аккаунт.</p>
+        <div class="coins-line">Кристаллы: <b id="dev-crystals">0</b></div>
+        <button class="btn primary" id="btn-dev-crystals">+100 КРИСТАЛЛОВ</button>
+        <p class="sub">Запчасть случайной основы выбранной редкости.</p>
+        <button class="btn" id="btn-dev-common">ОБЫЧНАЯ</button>
+        <button class="btn" id="btn-dev-rare">РЕДКАЯ</button>
+        <button class="btn" id="btn-dev-epic">ЭПИК</button>
+        <button class="btn" id="btn-dev-legendary">ЛЕГЕНДАРКА</button>
+        <button class="btn" id="btn-dev-back">НАЗАД</button>
+      </div>
+
+      <div id="screen-parts" class="screen hidden scroll tab-panel">
+        <h2>ИНВЕНТАРЬ</h2>
+        <p class="sub">Нажмите карточку, чтобы надеть, улучшить качество или разобрать.</p>
+        <p class="sub parts-dust" id="parts-dust">Пыль: 0</p>
+        <p class="sub part-group">Оружейные слоты</p>
+        <div class="part-board" id="parts-slots-weapon"></div>
+        <p class="sub part-group">Общие слоты</p>
+        <div class="part-board" id="parts-slots-common"></div>
+        <div id="parts-sets" class="parts-sets"></div>
+        <p class="sub part-group" id="parts-stash-title">Склад</p>
+        <div class="part-stash" id="parts-list"></div>
+      </div>
+
+      <div id="screen-shop" class="screen hidden scroll tab-panel">
+        <h2>МАГАЗИН</h2>
+        <div class="coins-line">Кристаллы: <b id="shop-crystals">0</b></div>
+        <div class="coins-line">Монеты: <b id="shop-coins">0</b></div>
+        <section class="gacha-banner">
+          <div class="chest-art" aria-hidden="true">
+            <div class="chest-lid"><span class="chest-gem"></span></div>
+            <div class="chest-box"><span class="chest-lock"></span></div>
+          </div>
+          <h3>Сундук</h3>
+          <p class="sub">Каждый сундук даёт запчасть. Каждый 10-й — эпическая или легендарная.</p>
+          <p class="sub" id="chest-pity"></p>
+          <div id="chest-families" class="chest-families hidden"></div>
+          <button class="btn primary" id="btn-chest-open" type="button">ОТКРЫТЬ ◆ 20</button>
+        </section>
+        <h3 class="shop-shelf-title">Пыль</h3>
+        <div class="shop-offer shop-exchange">
+          <strong>Полировочная пыль</strong>
+          <div class="sub">Пачка +10 к пыли за 200 монет. Для легендарных деталей, ранг не растёт.</div>
+          <div class="sub" id="shop-dust">Пыль: 0</div>
+          <button id="btn-dust-exchange" type="button">200 МОНЕТ</button>
+        </div>
+        <h3 class="shop-shelf-title">Навсегда</h3>
+        <div class="shop-grid" id="shop-list"></div>
+      </div>
+
+      <div id="screen-dailies" class="screen hidden scroll tab-panel">
+        <h2>ЗАДАНИЯ</h2>
+        <p class="sub">Набор меняется каждый день. Сброс в 00:00 по Москве. Незабранное сгорает.</p>
+        <section class="collection-entry">
+          <div>
+            <h3>Коллекция</h3>
+            <p class="sub" id="collection-progress">Открыто 0 из 0</p>
+            <p class="sub hidden" id="collection-fresh"></p>
+          </div>
+          <button class="btn" id="btn-collection" type="button">ОТКРЫТЬ</button>
+        </section>
+        <div class="upgrade-list" id="daily-list"></div>
+        <h3>Достижения</h3>
+        <p class="sub">Один раз на аккаунт. Награда только кристаллами.</p>
+        <div class="upgrade-list" id="achievement-list"></div>
+        <h3>Лидеры орды</h3>
+        <p class="sub" id="season-line">Сезон обновляется…</p>
+        <div class="leaderboard" id="leaderboard-list"></div>
+      </div>
+
+      <div id="screen-how" class="screen hidden">
+        <h2>КАК ИГРАТЬ</h2>
+        <ul class="how">
+          <li><b>Ядро в центре</b> — стоит на месте, пулемёт крутится на 360°.</li>
+          <li><b>Автонаводка</b> — без пальца всегда берёт ближайшую фигуру.</li>
+          <li><b>Палец</b> — только поворачивает ствол. Урона за удержание нет.</li>
+          <li><b>Крит</b> — с шанса бьёт сильнее. Ветка «Очередь» поднимает шанс и урон крита.</li>
+          <li><b>Враги со всех сторон</b> — сверху, снизу, слева и справа.</li>
+          <li><b>Резонанс форм</b> — серия убийств одного типа взрывает призму.</li>
+          <li><b>Выбор уровня.</b> Следующий открывается после предыдущего. Каждая глава — 5 уровней (1-1…1-5); за пройденную главу дают кристаллы.</li>
+          <li><b>Усиление</b> — один выбор из трёх: оружие, его улучшение или общая карта. Каждое 5-е улучшение одного оружия — выбор из трёх легендарок.</li>
+          <li><b>После уровня</b> — награда, потом следующий уровень, меню или бесконечный режим.</li>
+        </ul>
+        <button class="btn primary" id="btn-how-back">ПОНЯТНО</button>
+      </div>
+
+      <div id="screen-collection" class="screen hidden scroll">
+        <h2>КОЛЛЕКЦИЯ</h2>
+        <p class="sub" id="collection-sub">Что ты уже открыл в бою.</p>
+        <div id="collection-body"></div>
+        <button class="btn" id="btn-collection-back">НАЗАД</button>
+      </div>
+
+      <div id="screen-settings" class="screen hidden">
+        <h2>НАСТРОЙКИ</h2>
+        <p class="sub">Можно менять прямо между боями.</p>
+        <button class="btn" id="btn-damage-toggle">ПОКАЗ УРОНА: ВКЛ</button>
+        <p class="sub">Цифры урона над врагами. Крит подсвечен золотом.</p>
+        <button class="btn" id="btn-how2">КАК ИГРАТЬ</button>
+        <button class="btn primary" id="btn-save-progress" hidden>СОХРАНИТЬ ПРОГРЕСС</button>
+        <button class="btn" id="btn-login-other">ВОЙТИ В ДРУГОЙ АККАУНТ</button>
+        <button class="btn" id="btn-settings-back">НАЗАД</button>
+      </div>
+
+      <div id="screen-save" class="screen hidden">
+        <h2>СОХРАНИТЬ ПРОГРЕСС</h2>
+        <p class="sub">Придумай имя и пароль. Монеты, кристаллы и запчасти останутся. Без сохранения прогресс гостя пропадёт, если очистить браузер.</p>
+        <input class="field" id="save-name" maxlength="24" placeholder="Имя" />
+        <input class="field" id="save-password" type="password" maxlength="64" placeholder="Пароль" />
+        <p id="save-error" class="sub error"></p>
+        <button class="btn primary" id="btn-save-confirm">СОХРАНИТЬ</button>
+        <button class="btn" id="btn-save-back">ПОЗЖЕ</button>
+      </div>
+
+      <div id="screen-cards" class="screen dim hidden">
+        <h2 id="cards-title" class="upgrade-title">УСИЛЕНИЕ</h2>
+        <div id="card-loadout" class="card-loadout"></div>
+        <p id="cards-sub" class="sub">Выбери одну карту</p>
+        <div id="card-row" class="card-row"></div>
+        <button class="btn refresh" id="btn-reroll" type="button">ЕЩЁ РАЗ · БЕСПЛАТНО</button>
+      </div>
+
+      <div id="screen-level-clear" class="screen hidden">
+        <h2 id="clear-title">УРОВЕНЬ ПРОЙДЕН</h2>
+        <p id="clear-note" class="sub"></p>
+        <p id="clear-part" class="sub hidden"></p>
+        <div class="result-grid">
+          <div><span>Монеты уровня</span><b id="clear-coins">0</b></div>
+          <div><span>Кристаллы</span><b id="clear-crystals">0</b></div>
+        </div>
+        <button class="btn primary" id="btn-next-level">СЛЕДУЮЩИЙ УРОВЕНЬ</button>
+        <button class="btn primary" id="btn-next-chapter">СЛЕДУЮЩАЯ ГЛАВА</button>
+        <p class="sub horde-rule-line" id="clear-horde-rule"></p>
+        <button class="btn" id="btn-endless">БЕСКОНЕЧНЫЙ РЕЖИМ</button>
+        <button class="btn" id="btn-clear-menu">В МЕНЮ</button>
+      </div>
+
+      <div id="screen-result" class="screen scroll hidden">
+        <h2 id="result-title">ЯДРО ПАЛО</h2>
+        <p id="result-sub" class="sub"></p>
+        <div id="result-horde" class="result-horde hidden">
+          <div class="result-grid">
+            <div><span>Волны орды</span><b id="horde-waves">0</b></div>
+            <div><span>Кристаллы орды</span><b id="horde-crystals">0</b></div>
+          </div>
+          <p class="sub" id="horde-parts"></p>
+          <p class="sub hidden" id="horde-coins"></p>
+        </div>
+        <div class="result-grid">
+          <div><span>Уровень</span><b id="result-wave">0</b></div>
+          <div><span>Убито</span><b id="result-kills">0</b></div>
+          <div><span>Монеты</span><b id="result-coins">0</b></div>
+          <div><span>Кристаллы</span><b id="result-crystals">0</b></div>
+        </div>
+        <p class="sub hidden" id="result-account"></p>
+        <div id="result-report" class="result-report hidden"></div>
+        <button class="btn primary" id="btn-again">ЕЩЁ РАЗ</button>
+        <button class="btn" id="btn-result-menu">В МЕНЮ</button>
+      </div>
+
+      <div id="part-popup" class="part-popup hidden"></div>
+
+      <div id="gacha" class="gacha hidden" aria-hidden="true">
+        <div class="gacha-rays"></div>
+        <div class="gacha-flash"></div>
+        <div class="gacha-stage">
+          <div class="chest-art gacha-chest" id="gacha-chest" aria-hidden="true">
+            <div class="chest-lid"><span class="chest-gem"></span></div>
+            <div class="chest-box"><span class="chest-lock"></span></div>
+          </div>
+          <article class="gacha-prize card hidden" id="gacha-prize"></article>
+          <p class="gacha-hint" id="gacha-hint">Тап — пропустить</p>
+        </div>
+      </div>
+
+      <div id="toast" class="toast hidden"></div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
