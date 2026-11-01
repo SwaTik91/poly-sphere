@@ -1,0 +1,232 @@
+Не хватает монет")
+            if price["kind"] == "crystals" and account["crystals"] < price["amount"]:
+                raise ValueError("Не хватает кристаллов")
+            if price["kind"] == "coins":
+                self.db.execute("UPDATE accounts SET coins = coins - ? WHERE id = ?", (price["amount"], account_id))
+            elif price["kind"] == "crystals":
+                self.db.execute(
+                    "UPDATE accounts SET crystals = crystals - ? WHERE id = ?",
+                    (price["amount"], account_id),
+                )
+            used += 1
+            self.db.execute(
+                """
+                INSERT INTO reroll_counts (account_id, run_id, offer_level, used)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(account_id, run_id, offer_level) DO UPDATE SET used = excluded.used
+                """,
+                (account_id, run_id, offer_level, used),
+            )
+            profile = self._profile(account_id)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        return {"used": used, "price": price, "next": reroll_price(used), "profile": profile}
+
+    def buy_hangar(self, token, key):
+        if key not in HANGAR_TREE:
+            raise ValueError("Неизвестное улучшение")
+        return self._buy_hangar_node(token, key)
+
+    def _hangar_node_level(self, account_id, key):
+        node_row = self.db.execute(
+            "SELECT level FROM account_hangar_nodes WHERE account_id = ? AND node = ?",
+            (account_id, key),
+        ).fetchone()
+        return int(node_row["level"]) if node_row else 0
+
+    def _buy_hangar_node(self, token, key):
+        account_id = self._account_row(token)["id"]
+        spec = HANGAR_TREE[key]
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            requires = spec["requires"]
+            if requires:
+                req_node, req_level = requires
+                if self._hangar_node_level(account_id, req_node) < req_level:
+                    raise ValueError("Ветка ещё закрыта")
+            level = self._hangar_node_level(account_id, key)
+            if level >= spec["max"]:
+                raise ValueError("Уже максимум")
+            price = hangar_node_price(key, level)
+            if row["coins"] < price:
+                raise ValueError("Не хватает монет")
+            self.db.execute(
+                "UPDATE accounts SET coins = coins - ?, hangar_buys = hangar_buys + 1 WHERE id = ?",
+                (price, account_id),
+            )
+            self.db.execute(
+                """
+                INSERT INTO account_hangar_nodes (account_id, node, level)
+                VALUES (?, ?, 1)
+                ON CONFLICT(account_id, node) DO UPDATE SET level = level + 1
+                """,
+                (account_id, key),
+            )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        return {"profile": self._profile(account_id)}
+
+    def exchange_dust(self, token):
+        account_id = self._account_row(token)["id"]
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute("SELECT coins FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            if int(row["coins"]) < DUST_PACK_COINS:
+                raise ValueError("Не хватает монет")
+            self.db.execute(
+                "UPDATE accounts SET coins = coins - ?, dust = dust + ? WHERE id = ?",
+                (DUST_PACK_COINS, DUST_PACK_DUST, account_id),
+            )
+            self._bump_daily(account_id, "dust_buys")
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        return {"profile": self._profile(account_id), "dust": DUST_PACK_DUST}
+
+    def buy_shop(self, token, kind, weapon=None):
+        account_id = self._account_row(token)["id"]
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            weapons = self._weapons(account_id)
+            updated = buy_crystal_item(
+                {
+                    "crystals": row["crystals"],
+                    "crit_bonus": row["crit_bonus"],
+                    "weapons": weapons,
+                    "fourth_card": bool(row["fourth_card"]),
+                },
+                kind,
+                weapon,
+            )
+            self.db.execute(
+                "UPDATE accounts SET crystals = ?, crit_bonus = ?, fourth_card = ? WHERE id = ?",
+                (updated["crystals"], updated["crit_bonus"], int(updated["fourth_card"]), account_id),
+            )
+            for item in updated["weapons"]:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO owned_weapons (account_id, weapon) VALUES (?, ?)",
+                    (account_id, item),
+                )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        return {"profile": self._profile(account_id)}
+
+    def _weapon_loadout(self, account_id, row=None):
+        if row is None:
+            row = self.db.execute(
+                "SELECT weapon_loadout_json FROM accounts WHERE id = ?", (account_id,)
+            ).fetchone()
+        raw = row["weapon_loadout_json"] if row is not None else None
+        try:
+            slots = json.loads(raw) if raw else list(DEFAULT_WEAPON_LOADOUT)
+        except (TypeError, ValueError):
+            slots = list(DEFAULT_WEAPON_LOADOUT)
+        return self._sanitize_weapon_loadout(account_id, slots)
+
+    def _sanitize_weapon_loadout(self, account_id, loadout):
+        owned = set(self._weapons(account_id)) | set(FREE_WEAPONS)
+        slots = [None] * WEAPON_SLOTS
+        slots[0] = "gun"
+        seen = {"gun"}
+        idx = 1
+        for item in loadout or []:
+            if idx >= WEAPON_SLOTS:
+                break
+            if item in (None, "", "gun"):
+                continue
+            if item not in ALL_WEAPONS:
+                raise ValueError("Нет такого орудия")
+            if item not in owned:
+                raise ValueError("Орудие не куплено")
+            if item in seen:
+                continue
+            slots[idx] = item
+            seen.add(item)
+            idx += 1
+        return slots
+
+    def set_weapon_loadout(self, token, loadout):
+        account_id = self._account_row(token)["id"]
+        if not isinstance(loadout, list):
+            raise ValueError("Некорректный лоадаут")
+        slots = self._sanitize_weapon_loadout(account_id, loadout)
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            self.db.execute(
+                "UPDATE accounts SET weapon_loadout_json = ? WHERE id = ?",
+                (json.dumps(slots, ensure_ascii=False), account_id),
+            )
+            profile = self._profile(account_id)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        return {"profile": profile}
+
+    def open_chest(self, token, rng, request_id=None, roller=None, family=None):
+        account_id = self._account_row(token)["id"]
+        request_id = str(request_id or "").strip()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            if request_id:
+                saved = self.db.execute(
+                    "SELECT response_json FROM chest_requests WHERE account_id = ? AND request_id = ?",
+                    (account_id, request_id),
+                ).fetchone()
+                if saved:
+                    self.db.commit()
+                    return json.loads(saved["response_json"])
+            row = self.db.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            if row["crystals"] < 20:
+                raise ValueError("Не хватает кристаллов")
+            pity = chest_pity_rarity(row["chests_opened"], rng())
+            owned = list(self._owned_weapon_families(account_id))
+            if pity:
+                family = str(family or "").strip().lower()
+                allowed = {"common", *owned}
+                if family not in allowed:
+                    raise ValueError("Выберите семью")
+            else:
+                family = None
+            part_id = secrets.token_hex(16)
+            if roller is None:
+                part = parts_bridge.roll_part(rng, owned, part_id, pity, family)
+            else:
+                part = roller(rng, owned, pity, family)
+                if not part.get("id"):
+                    part = {**part, "id": part_id}
+                if pity:
+                    part = {**part, "rarity": pity}
+            self._insert_part(account_id, part)
+            self.db.execute(
+                "UPDATE accounts SET crystals = crystals - 20, chests_opened = chests_opened + 1 WHERE id = ?",
+                (account_id,),
+            )
+            self._bump_daily(account_id, "chests")
+            drop = {
+                "kind": "part",
+                "pity": bool(pity),
+                "part": {
+                    "id": part["id"],
+                    "base": part["base"],
+                    "baseName": part.get("baseName") or part.get("base_name") or "",
+                    "family": part.get("family"),
+                    "rarity": part["rarity"],
+                    "affixes": part.get("affixes") or [],
+                },
+            }
+            payload = {"drop": drop, "profile": self._profile(account_id)}
+            encoded = json.dumps(payload, ensure_ascii=False)
+            if request_id:
+                self.db.execute(
+                    "INSERT INTO chest_requests (account_id, request_id, response_json) VALUES (?, ?, ?)",
+                    (account_id, 
