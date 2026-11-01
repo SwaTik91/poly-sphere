@@ -1,0 +1,334 @@
+o verify it passes**
+
+Run: `python3 -m unittest server.test_store server.test_rewards -v`
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add server/store.py server/test_store.py
+git commit -m "Persist accounts and idempotent run claims."
+```
+
+### Task 4: HTTP API
+
+**Files:**
+- Create: `server/app.py`
+- Modify: `server/test_store.py`
+
+**Interfaces:**
+- Consumes: `Store` from Task 3
+- Produces: `make_handler(store)`, `serve(host, port, db_path)`. Routes: `POST /register`, `POST /login`, `GET /me`, `POST /runs`, `POST /hangar`, `POST /shop`, `POST /chest`, `POST /achievements/{id}/claim`, `POST /dailies/{id}/claim`. Authenticated routes read `Authorization: Bearer <token>`. JSON errors use status 400 and `{"error": "<message>"}`.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `server/test_store.py`:
+
+```python
+import json
+from server.app import make_handler
+from http.server import BaseHTTPRequestHandler
+
+class HandlerTests(unittest.TestCase):
+    def test_register_then_me(self):
+        store = Store(tempfile.mktemp(suffix=".sqlite"))
+        handler_cls = make_handler(store)
+        status, body = call(handler_cls, "POST", "/register", {"name": "Ada", "password": "secret-pass"})
+        self.assertEqual(status, 200)
+        token = body["token"]
+        status, me = call(handler_cls, "GET", "/me", None, token)
+        self.assertEqual(me["profile"]["coins"], 0)
+        os.remove(store.path)
+
+def call(handler_cls, method, path, payload, token=None):
+    class Result:
+        status = None
+        body = b""
+    result = Result()
+    class Fake(handler_cls):
+        def __init__(self):
+            self.path = path
+            self.headers = {"Authorization": f"Bearer {token}"} if token else {}
+            self.rfile = io.BytesIO(json.dumps(payload or {}).encode())
+            self.wfile = io.BytesIO()
+            self.requestline = f"{method} {path} HTTP/1.1"
+            self.request_version = "HTTP/1.1"
+            self.command = method
+        def send_response(self, code, message=None):
+            result.status = code
+        def send_header(self, key, value):
+            pass
+        def end_headers(self):
+            pass
+        def log_message(self, fmt, *args):
+            pass
+    import io
+    fake = Fake()
+    getattr(fake, f"do_{method}")()
+    return result.status, json.loads(fake.wfile.getvalue() or b"{}")
+```
+
+Move `import io` to the top of the test file instead of leaving it inside `call`.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python3 -m unittest server.test_store.HandlerTests -v`
+
+Expected: FAIL with `ModuleNotFoundError: No module named 'server.app'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+`server/app.py` subclasses `BaseHTTPRequestHandler`. It adds `Access-Control-Allow-Origin: *` and handles `OPTIONS`. `POST /register` and `POST /login` call the store and return `{token, profile}`. The other routes require a bearer token. `POST /runs` passes the JSON body and `datetime.now(timezone.utc).astimezone()` as `now`. `POST /chest` passes `random.SystemRandom()`. Map `ValueError` to status 400. `serve` builds `Store(db_path)` and calls `HTTPServer((host, port), make_handler(store)).serve_forever()`.
+
+Add at the bottom:
+
+```python
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--db", default="/var/lib/roguebullet/account.sqlite")
+    args = parser.parse_args()
+    serve(args.host, args.port, args.db)
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python3 -m unittest server.test_store server.test_rewards -v`
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add server/app.py server/test_store.py
+git commit -m "Expose account rewards over HTTP."
+```
+
+### Task 5: Login gate in the browser
+
+**Files:**
+- Create: `src/api.js`
+- Modify: `index.html`
+- Modify: `src/main.js`
+- Modify: `src/style.css`
+- Modify: `package.json`
+
+**Interfaces:**
+- Consumes: API routes from Task 4. Default base is `http://157.22.230.112:8080`, overridable with `localStorage["roguebullet-api"]`.
+- Produces: `api.register(name, password)`, `api.login(name, password)`, `api.me()`, `api.token()` returns the saved token or `""`. `main.js` does not call `game.startRun()` unless `api.token()` is non-empty.
+
+- [ ] **Step 1: Write the failing test**
+
+There is no browser test runner. Add `server/test_client_contract.py` only for the URL join helper by exporting nothing from JS. Instead, test the client contract with a small node test that mocks `fetch` after adding `src/api.js`.
+
+Create `test/api.test.js`:
+
+```javascript
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createApi } from "../src/api.js";
+
+test("login stores the token and me sends it", async () => {
+  const saved = {};
+  const calls = [];
+  const api = createApi({
+    base: "http://api.test",
+    storage: {
+      getItem: (key) => saved[key] || "",
+      setItem: (key, value) => {
+        saved[key] = value;
+      },
+    },
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ token: "abc", profile: { name: "Ada", coins: 0 } }),
+      };
+    },
+  });
+  const session = await api.login("Ada", "secret-pass");
+  assert.equal(session.token, "abc");
+  assert.equal(api.token(), "abc");
+  await api.me();
+  assert.equal(calls[1].options.headers.Authorization, "Bearer abc");
+});
+```
+
+Change the `test` script in `package.json` to `node --test test/api.test.js`.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test test/api.test.js`
+
+Expected: FAIL with `Cannot find module '../src/api.js'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+`src/api.js` exports `createApi({ base, storage, fetch })` and a default `api` using `localStorage`, `window.fetch`, and `localStorage.getItem("roguebullet-api") || "http://157.22.230.112:8080"`. Token key is `roguebullet-token`. `login` and `register` POST JSON and save `token`. `me` GETs `/me` with the bearer header. Non-200 responses throw `Error` with the server `error` string.
+
+In `index.html`, add `#screen-login` before `#screen-menu` with name input `#login-name`, password input `#login-password`, button `#btn-login`, button `#btn-register`, and error paragraph `#login-error`. Add menu buttons `#btn-shop`, `#btn-chest`, `#btn-dailies`, `#btn-achievements`. Show account level, coins, and crystals as `#menu-account`, `#menu-coins`, and a new `#menu-crystals`.
+
+In `src/main.js`, on load call `api.me()`. On success show the menu and replace the local coin display with `profile`. On failure show `#screen-login` and hide the menu. `#btn-play` returns immediately when `api.token()` is empty.
+
+Add `.field` styles for the two inputs: full width, 14px padding, dark background, light text, same radius as `.btn`.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `node --test test/api.test.js`
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/api.js test/api.test.js package.json index.html src/main.js src/style.css
+git commit -m "Require a server session before the menu."
+```
+
+### Task 6: Claim a run and apply the profile
+
+**Files:**
+- Modify: `src/api.js`
+- Modify: `src/game.js`
+- Modify: `test/api.test.js`
+
+**Interfaces:**
+- Consumes: `POST /runs` from Task 4 and the profile fields `critBonus`, `fourthCard`, `weapons`, `hangar`, `cardQueue`
+- Produces: `api.claimRun(facts) -> {granted, profile}`. `Game.startRun()` copies server hangar, crit, weapons, and one queued card into the run. `Game.end()` and `Game.advanceLevel()` do not write local coins. `end()` posts facts once and retries the same `runId` from `localStorage["roguebullet-pending-run"]` when the request fails.
+
+- [ ] **Step 1: Write the failing test**
+
+Extend `test/api.test.js` with a claim call that posts `runId` and does not send a `coins` field. Assert the request body has `kills` and no `coins`.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test test/api.test.js`
+
+Expected: FAIL because `api.claimRun` is undefined
+
+- [ ] **Step 3: Write minimal implementation**
+
+Add `claimRun(facts)` to `createApi`. It POSTs `/runs`.
+
+In `Game.startRun()`, set `this.run.runId = crypto.randomUUID()` and `this.run.kills = {circle:0, triangle:0, square:0, hex:0, diamond:0, split:0, boss:0}`. Increment the matching counter in `kill()` using `e.type`, mapping split spawns to `split`. Track `this.run.wavesCleared` by incrementing it in `queueWave` only after a wave is fully cleared, before `wave` increments. Track `this.run.levelsCleared` in `advanceLevel` before the level number changes, and include the final level when `end(true)` runs.
+
+`facts()` returns `{runId, kills, wavesCleared, levelsCleared, endedLevel: this.run.level, endedWave: this.run.wave, won: this.run.won}`.
+
+`end()` saves those facts under `roguebullet-pending-run`, calls `api.claimRun`, clears the key on success, and passes `granted` to `ui.showResult`. On failure it leaves the key and shows the result with the text `Награда будет выдана при появлении связи`. On the next `showPlay` or menu load, if the key exists, call `claimRun` again.
+
+Apply profile at the start of the run: `gun.dmg` includes `1 + critBonus / 100` in the crit chance (`run.crit.chance = 0.08 + critBonus / 100`), hangar levels replace `meta.atk`, `meta.hp`, and `meta.charge`, owned weapons are active with `defaultWep`, and the first queued card is applied through the existing card `apply` function for Калибр, Темп, Сервопривод, or Пластины. `pickCards` asks for 4 cards when `profile.fourthCard` is true.
+
+Remove the local `meta.coins += gain` write from `end()`.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `node --test test/api.test.js && python3 -m unittest server.test_rewards server.test_store -v`
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/api.js src/game.js test/api.test.js
+git commit -m "Claim run rewards from the server."
+```
+
+### Task 7: Hangar, crystal shop, chest, dailies, and achievements
+
+**Files:**
+- Modify: `src/api.js`
+- Modify: `src/main.js`
+- Modify: `index.html`
+- Modify: `test/api.test.js`
+
+**Interfaces:**
+- Consumes: `POST /hangar`, `POST /shop`, `POST /chest`, `POST /achievements/{id}/claim`, `POST /dailies/{id}/claim`
+- Produces: menu screens that render the profile lists and replace the shown profile with the response profile after every successful call
+
+- [ ] **Step 1: Write the failing test**
+
+Add a node test that `createApi().buyShop("weapon", "laser")` POSTs `{"kind":"weapon","weapon":"laser"}` to `/shop` with the bearer token.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test test/api.test.js`
+
+Expected: FAIL because `buyShop` is undefined
+
+- [ ] **Step 3: Write minimal implementation**
+
+Add `buyHangar(key)`, `buyShop(kind, weapon)`, `openChest()`, `claimAchievement(id)`, and `claimDaily(id)` to `src/api.js`.
+
+Replace the local hangar renderer so prices and levels come from `profile.hangar` and the button calls `api.buyHangar`. Add screens for the crystal shop, one chest button, three daily rows, and seven achievement rows. Each row shows the spec title, crystal amount, and a button enabled only when the profile says it is ready and unclaimed. The chest button shows the returned drop text: coins, crystals, crit, or the queued card name. After every success, repaint the menu counters from the returned profile.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `node --test test/api.test.js && python3 -m unittest discover -s server -v`
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/api.js src/main.js index.html test/api.test.js
+git commit -m "Add crystal shop, chest, dailies, and achievements."
+```
+
+### Task 8: Deploy the API beside the static game
+
+**Files:**
+- Create: `deploy/roguebullet-api.service`
+
+**Interfaces:**
+- Consumes: `python3 -m server.app --port 8080 --db /var/lib/roguebullet/account.sqlite`
+- Produces: a systemd service that restarts the API on boot without binding ports 80, 443, or 8443
+
+- [ ] **Step 1: Write the service file**
+
+```ini
+[Unit]
+Description=Roguebullet account API
+After=network.target
+
+[Service]
+WorkingDirectory=/var/www/roguebullet-src
+ExecStart=/usr/bin/python3 -m server.app --host 0.0.0.0 --port 8080 --db /var/lib/roguebullet/account.sqlite
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+```
+
+- [ ] **Step 2: Run the local test suite before copying files**
+
+Run: `python3 -m unittest discover -s server -v && node --test test/api.test.js && npm run build`
+
+Expected: all tests PASS and `dist/` is rebuilt
+
+- [ ] **Step 3: Install on the server**
+
+Copy `server/` to `/var/www/roguebullet-src/server` and copy `dist/` to `/var/www/roguebullet`. Create `/var/lib/roguebullet`. Install the unit as `/etc/systemd/system/roguebullet-api.service`, then run `systemctl daemon-reload && systemctl enable --now roguebullet-api`. Open `8080/tcp` in ufw. Do not restart xray and do not change listeners on 443 or 8443.
+
+- [ ] **Step 4: Verify the public endpoints**
+
+Run from the development machine:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://157.22.230.112/
+curl -s -X POST http://157.22.230.112:8080/register -H 'Content-Type: application/json' -d '{"name":"deploy-check","password":"deploy-check-pass"}'
+```
+
+Expected: the first command prints `200`. The second returns JSON with `token` and `profile`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add deploy/roguebullet-api.service
+git commit -m "Add the account API service unit."
+```
