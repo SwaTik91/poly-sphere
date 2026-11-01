@@ -1,0 +1,278 @@
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+from server import parts_bridge
+from server.rewards import (
+    ACHIEVEMENT_CRYSTALS,
+    CRIT_CAP,
+    achievement_crystals,
+    ACCOUNT_XP_STEP,
+    account_track,
+    apply_account_xp,
+    buy_crystal_item,
+    coin_reward,
+    daily_tasks,
+    DUST_PACK_COINS,
+    DUST_PACK_DUST,
+    HORDE_RULE_COINS,
+    endless_crystals,
+    horde_rule_for,
+    kill_caps,
+    reroll_price,
+    first_clear_crystals,
+    hangar_node_price,
+    legacy_hangar_refund,
+    HANGAR_TREE,
+    LEADERBOARD_SIZE,
+    MAX_LEVEL,
+    ready_achievements,
+    chest_pity_rarity,
+    season_days_left,
+    season_for_date,
+    season_label,
+    xp_reward,
+    ENEMY_COINS,
+    WAVES_PER_LEVEL,
+)
+
+MOSCOW = ZoneInfo("Europe/Moscow")
+DEFAULT_LOADOUT_JSON = "[null,null,null,null,null,null,null,null]"
+WEAPON_SLOTS = 5
+FREE_WEAPONS = ("gun", "drone")
+ALL_WEAPONS = ("gun", "drone", "laser", "scatter", "grenade", "emp", "orb")
+DEFAULT_WEAPON_LOADOUT = ["gun", "drone", None, None, None]
+DEFAULT_WEAPON_LOADOUT_JSON = json.dumps(DEFAULT_WEAPON_LOADOUT)
+PART_RARITY_ORDER = ["common", "rare", "epic", "legendary"]
+PART_RARITY_STEP = {"common": 1, "rare": 2, "epic": 3, "legendary": 4}
+SALVAGE_DUST = {"common": 5, "rare": 15, "epic": 40, "legendary": 100}
+POLISH_MAX = 5
+POLISH_COST = [30, 50, 80, 120, 180]
+ENDLESS_PART_CHANCE = 0.30
+ENDLESS_PART_EVERY = 5
+LEVEL_PART_CHANCE = 0.40
+LEVEL_PART_PITY = 3
+TESTERS = {"sharon"}
+GUESTS_PER_IP_PER_DAY = 20
+EVENT_RETENTION_DAYS = 90
+HORDE_FIRST_WAVE = 11
+HORDE_CLAIM_GAP = timedelta(seconds=3)
+LEVEL_NOTE_GAP = timedelta(seconds=2)
+
+
+def is_tester_name(name):
+    return str(name or "").strip().lower() in TESTERS
+
+
+def dev_tools_enabled():
+    return os.environ.get("ROGUEBULLET_DEV", "").strip() == "1"
+
+
+def moscow_day(now):
+    if isinstance(now, str):
+        now = datetime.fromisoformat(now)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now.astimezone(MOSCOW).date().isoformat()
+
+
+def moscow_date(now):
+    if isinstance(now, str):
+        now = datetime.fromisoformat(now)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now.astimezone(MOSCOW).date()
+
+
+class Store:
+    def __init__(self, path):
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        self.path = path
+        self.db = sqlite3.connect(path, check_same_thread=False)
+        self.db.row_factory = sqlite3.Row
+        self._init()
+
+    def _init(self):
+        self.db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS accounts (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                password TEXT NOT NULL,
+                coins INTEGER NOT NULL DEFAULT 0,
+                crystals INTEGER NOT NULL DEFAULT 0,
+                xp INTEGER NOT NULL DEFAULT 0,
+                account_level INTEGER NOT NULL DEFAULT 1,
+                crit_bonus INTEGER NOT NULL DEFAULT 0,
+                fourth_card INTEGER NOT NULL DEFAULT 0,
+                hangar_atk INTEGER NOT NULL DEFAULT 0,
+                hangar_hp INTEGER NOT NULL DEFAULT 0,
+                hangar_charge INTEGER NOT NULL DEFAULT 0,
+                hangar_buys INTEGER NOT NULL DEFAULT 0,
+                chests_opened INTEGER NOT NULL DEFAULT 0,
+                dust INTEGER NOT NULL DEFAULT 0,
+                kills_total INTEGER NOT NULL DEFAULT 0,
+                loadout_json TEXT NOT NULL DEFAULT '[null,null,null,null,null,null,null,null]',
+                parts_dry INTEGER NOT NULL DEFAULT 0,
+                best_endless INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS sessions (
+                token_hash TEXT PRIMARY KEY,
+                account_id INTEGER NOT NULL,
+                expires_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS cleared_levels (
+                account_id INTEGER NOT NULL,
+                level INTEGER NOT NULL,
+                PRIMARY KEY (account_id, level)
+            );
+            CREATE TABLE IF NOT EXISTS claimed_runs (
+                account_id INTEGER NOT NULL,
+                run_id TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                PRIMARY KEY (account_id, run_id)
+            );
+            CREATE TABLE IF NOT EXISTS achievements (
+                account_id INTEGER NOT NULL,
+                achievement_id TEXT NOT NULL,
+                claimed INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (account_id, achievement_id)
+            );
+            CREATE TABLE IF NOT EXISTS daily (
+                account_id INTEGER NOT NULL,
+                day TEXT NOT NULL,
+                kills INTEGER NOT NULL DEFAULT 0,
+                wave3 INTEGER NOT NULL DEFAULT 0,
+                level_clear INTEGER NOT NULL DEFAULT 0,
+                endless_wave INTEGER NOT NULL DEFAULT 0,
+                claimed_json TEXT NOT NULL DEFAULT '[]',
+                PRIMARY KEY (account_id, day)
+            );
+            CREATE TABLE IF NOT EXISTS owned_weapons (
+                account_id INTEGER NOT NULL,
+                weapon TEXT NOT NULL,
+                PRIMARY KEY (account_id, weapon)
+            );
+            CREATE TABLE IF NOT EXISTS card_queue (
+                id INTEGER PRIMARY KEY,
+                account_id INTEGER NOT NULL,
+                card TEXT NOT NULL,
+                seq INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS card_takes (
+                account_id INTEGER NOT NULL,
+                run_id TEXT NOT NULL,
+                card TEXT,
+                PRIMARY KEY (account_id, run_id)
+            );
+            CREATE TABLE IF NOT EXISTS chest_requests (
+                account_id INTEGER NOT NULL,
+                request_id TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                PRIMARY KEY (account_id, request_id)
+            );
+            CREATE TABLE IF NOT EXISTS endless_claims (
+                account_id INTEGER NOT NULL,
+                level INTEGER NOT NULL,
+                wave INTEGER NOT NULL,
+                PRIMARY KEY (account_id, level, wave)
+            );
+            CREATE TABLE IF NOT EXISTS run_level_clears (
+                account_id INTEGER NOT NULL,
+                run_id TEXT NOT NULL,
+                level INTEGER NOT NULL,
+                cleared_at TEXT NOT NULL,
+                PRIMARY KEY (account_id, run_id, level)
+            );
+            CREATE TABLE IF NOT EXISTS horde_runs (
+                account_id INTEGER NOT NULL,
+                run_id TEXT NOT NULL,
+                level INTEGER NOT NULL,
+                next_wave INTEGER NOT NULL,
+                last_claim_at TEXT NOT NULL,
+                PRIMARY KEY (account_id, run_id)
+            );
+            CREATE TABLE IF NOT EXISTS schema_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS endless_leaderboard (
+                account_id INTEGER NOT NULL,
+                season INTEGER NOT NULL,
+                best_wave INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (account_id, season)
+            );
+            CREATE TABLE IF NOT EXISTS reroll_counts (
+                account_id INTEGER NOT NULL,
+                run_id TEXT NOT NULL,
+                offer_level INTEGER NOT NULL,
+                used INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (account_id, run_id, offer_level)
+            );
+            CREATE TABLE IF NOT EXISTS account_parts (
+                id TEXT PRIMARY KEY,
+                account_id INTEGER NOT NULL,
+                base TEXT NOT NULL,
+                base_name TEXT NOT NULL,
+                family TEXT,
+                rarity TEXT NOT NULL,
+                affixes_json TEXT NOT NULL,
+                polish INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS part_rolls (
+                account_id INTEGER NOT NULL,
+                roll_key TEXT NOT NULL,
+                part_id TEXT NOT NULL,
+                PRIMARY KEY (account_id, roll_key)
+            );
+            CREATE TABLE IF NOT EXISTS account_hangar_nodes (
+                account_id INTEGER NOT NULL,
+                node TEXT NOT NULL,
+                level INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (account_id, node)
+            );
+            CREATE TABLE IF NOT EXISTS guest_ips (
+                ip TEXT NOT NULL,
+                day TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (ip, day)
+            );
+            CREATE TABLE IF NOT EXISTS run_events (
+                run_id TEXT NOT NULL,
+                account_id INTEGER NOT NULL,
+                is_tester INTEGER NOT NULL DEFAULT 0,
+                is_guest INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT,
+                ended_at TEXT,
+                start_level INTEGER,
+                outcome TEXT,
+                end_level INTEGER,
+                end_wave INTEGER,
+                duration REAL,
+                kills INTEGER,
+                weapons_json TEXT,
+                parts_json TEXT,
+                cards_json TEXT,
+                branches_json TEXT,
+                legendaries_json TEXT,
+                damage_json TEXT,
+                PRIMARY KEY (run_id, account_id)
+            );
+            """
+        )
+        self._ensure_column("accounts", "loadout_json", f"TEXT NOT NULL DEFAULT '{DEFAULT_LOADOUT_JSON}'")
+        self._ensure_column(
+            "accounts",
+            "weapon_loadout_json",
+            f"TEXT NOT NULL DEFAULT '{DEFAULT_WEAPON_LOADOUT_JSON}'",
+        )
+        self._ensure_column("accounts", "parts_dry", "INTEGER NOT NULL DEFAULT 0")
+        self._e
