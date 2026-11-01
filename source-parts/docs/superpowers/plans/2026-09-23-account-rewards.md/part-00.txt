@@ -63,7 +63,6 @@
 import unittest
 from server.rewards import apply_account_xp, coin_reward, first_clear_crystals, xp_reward
 
-
 class RewardTests(unittest.TestCase):
     def test_coins_add_kill_table_progress_and_win_bonus(self):
         kills = {"circle": 2, "triangle": 0, "square": 1, "hex": 0, "diamond": 0, "split": 1, "boss": 1}
