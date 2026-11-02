@@ -1,0 +1,631 @@
+ctx;
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = "#05060c";
+    ctx.fillRect(0, 0, w, h);
+    const shx = (Math.random() - 0.5) * this.shake * this.dpr;
+    const shy = (Math.random() - 0.5) * this.shake * this.dpr;
+    ctx.setTransform(this.scale * this.dpr, 0, 0, this.scale * this.dpr, (this.ox + shx / this.dpr) * this.dpr, (this.oy + shy / this.dpr) * this.dpr);
+
+    ctx.fillStyle = "#070814";
+    ctx.fillRect(0, 0, this.worldW, this.worldH);
+    for (const s of this.stars) {
+      ctx.globalAlpha = s.a;
+      ctx.fillStyle = "#9bb6ff";
+      ctx.fillRect(s.x, s.y, s.s, s.s);
+    }
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = "rgba(90,120,200,0.07)";
+    ctx.lineWidth = 1;
+    for (let y = 40; y < this.worldH; y += 48) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(this.worldW, y);
+      ctx.stroke();
+    }
+
+    if (!this.run) return;
+    const tw = this.run.tower;
+
+    const grd = ctx.createRadialGradient(tw.x, tw.y, 20, tw.x, tw.y, 260);
+    grd.addColorStop(0, "rgba(126,232,255,0.08)");
+    grd.addColorStop(1, "rgba(126,232,255,0)");
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(tw.x, tw.y, 260, 0, Math.PI * 2);
+    ctx.fill();
+
+    for (const e of this.run.enemies) this.drawEnemy(ctx, e);
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.07)";
+    ctx.setLineDash([12, 16]);
+    ctx.lineWidth = 2;
+    for (const rad of [130, 220, 320]) {
+      ctx.beginPath();
+      ctx.arc(tw.x, tw.y, rad, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    for (const b of this.run.bullets) this.drawBullet(ctx, b);
+    for (const s of this.run.bossShots || []) paintBossShot(ctx, s, this.run.clock || 0);
+    for (const f of this.run.fx) this.drawFx(ctx, f);
+
+    if (this.run.weapons.orb && this.run.wepStats.orb) {
+      const o = this.run.wepStats.orb;
+      const spots = o.spots || [];
+      for (let i = 0; i < o.count; i++) {
+        const spot = spots[i] || this.orbHome(o, i, tw);
+        ctx.fillStyle = "#34d399";
+        ctx.beginPath();
+        ctx.arc(spot.x, spot.y, o.branch === "blade" ? 6 : 9, 0, Math.PI * 2);
+        ctx.fill();
+        if (o.branch === "blade") {
+          const a = Math.atan2(spot.y - tw.y, spot.x - tw.x);
+          ctx.strokeStyle = "#34d399";
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          ctx.moveTo(spot.x, spot.y);
+          ctx.lineTo(spot.x + Math.cos(a + 1.2) * 18 * (o.reach || 1), spot.y + Math.sin(a + 1.2) * 18 * (o.reach || 1));
+          ctx.stroke();
+        }
+      }
+    }
+    for (const pool of this.run.pools || []) this.drawPool(ctx, pool);
+    for (const d of this.run.drones) {
+      ctx.save();
+      ctx.translate(d.x, d.y);
+      ctx.fillStyle = "#f472b6";
+      ctx.shadowColor = "#f472b6";
+      ctx.shadowBlur = 18;
+      ctx.beginPath();
+      ctx.moveTo(0, -26);
+      ctx.lineTo(20, 18);
+      ctx.lineTo(0, 8);
+      ctx.lineTo(-20, 18);
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "#ffe4f1";
+      ctx.beginPath();
+      ctx.arc(0, -2, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    this.drawBossTells(ctx);
+    if (this.run.seats?.length) {
+      for (const seat of this.run.seats) this.drawTower(ctx, seat);
+    } else this.drawTower(ctx);
+    if (this.run.bossIntro > 0) this.drawBossIntro(ctx);
+  }
+
+  drawBossTells(ctx) {
+    for (const e of this.run.enemies) {
+      if (e.dead || e.beamAim == null) continue;
+      ctx.save();
+      ctx.strokeStyle = e.color || "#c084fc";
+      ctx.globalAlpha = 0.45;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(e.x, e.y);
+      ctx.lineTo(e.x + Math.cos(e.beamAim) * 980, e.y + Math.sin(e.beamAim) * 980);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  drawBossIntro(ctx) {
+    const t = this.run.bossIntro;
+    const pulse = 0.5 + 0.5 * Math.sin((2.6 - t) * 16);
+    const cx = this.worldW / 2;
+    const cy = this.worldH / 2;
+    ctx.save();
+    ctx.fillStyle = `rgba(80, 0, 30, ${0.28 + pulse * 0.18})`;
+    ctx.fillRect(0, 0, this.worldW, this.worldH);
+    ctx.strokeStyle = "#ff5d9a";
+    ctx.lineWidth = 10;
+    ctx.globalAlpha = 0.45 + pulse * 0.4;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 90 + pulse * 70, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#ffe08a";
+    ctx.font = `800 ${92 + pulse * 22}px Manrope, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.shadowColor = "#ff4d88";
+    ctx.shadowBlur = 32;
+    const kind = bossKind(this.run.wave);
+    ctx.fillStyle = kind.color;
+    ctx.strokeStyle = kind.color;
+    ctx.fillText(kind.name.toUpperCase(), cx, cy);
+    ctx.font = "700 28px Manrope, sans-serif";
+    ctx.fillStyle = "#ffd0e2";
+    ctx.shadowBlur = 0;
+    ctx.fillText(`ВОЛНА ${this.run.wave}`, cx, cy + 78);
+    ctx.restore();
+  }
+
+  drawBullet(ctx, b) {
+    if (b.kind === "gun") {
+      const ang = Math.atan2(b.vy, b.vx);
+      ctx.save();
+      ctx.translate(b.x, b.y);
+      ctx.rotate(ang);
+      const trail = ctx.createLinearGradient(-22, 0, 0, 0);
+      trail.addColorStop(0, "rgba(255,255,255,0)");
+      trail.addColorStop(1, "rgba(255,255,255,0.9)");
+      ctx.fillStyle = trail;
+      ctx.fillRect(-22, -1.6, 18, 3.2);
+      ctx.fillStyle = "#fff";
+      ctx.shadowColor = "#fff";
+      ctx.shadowBlur = 14;
+      ctx.beginPath();
+      ctx.moveTo(8, 0);
+      ctx.lineTo(-1, -5.5);
+      ctx.lineTo(-1, 5.5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(2, 0);
+      ctx.lineTo(-8, -4.2);
+      ctx.lineTo(-8, 4.2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(-1, 0, 2.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+    if (b.tag === "scatter") {
+      const ang = Math.atan2(b.vy, b.vx);
+      const heavy = b.r > 4;
+      const len = heavy ? 22 : 14;
+      ctx.save();
+      ctx.translate(b.x, b.y);
+      ctx.rotate(ang);
+      const trail = ctx.createLinearGradient(-len, 0, heavy ? 7 : 4, 0);
+      trail.addColorStop(0, "rgba(251, 191, 36, 0)");
+      trail.addColorStop(0.55, "rgba(251, 191, 36, 0.55)");
+      trail.addColorStop(1, "rgba(255, 244, 196, 0.95)");
+      ctx.fillStyle = trail;
+      ctx.shadowColor = "#fbbf24";
+      ctx.shadowBlur = heavy ? 12 : 7;
+      ctx.beginPath();
+      ctx.moveTo(heavy ? 7 : 4, 0);
+      ctx.lineTo(-len, heavy ? -3.4 : -2.1);
+      ctx.lineTo(-len, heavy ? 3.4 : 2.1);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+    ctx.fillStyle = b.color;
+    ctx.shadowColor = b.color;
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+
+  drawTower(ctx, seat) {
+    const tw = seat || this.run.tower;
+    const aimAngle = seat ? seat.angle : this.run.gun.angle;
+    const rate = this.run.gun?.rate || 8;
+    const flash = (seat ? seat.cd : this.run.gun?.cd) > (1 / rate) * 0.65;
+    ctx.save();
+    ctx.translate(tw.x, tw.y);
+    this.drawCoreBody(ctx, tw.r || 34);
+    ctx.rotate(aimAngle);
+    ctx.translate((tw.r || 34) * 0.42, 0);
+    this.drawTurret(ctx, flash);
+    ctx.restore();
+  }
+
+  drawCoreBody(ctx, r) {
+    const body = ctx.createRadialGradient(-r * 0.28, -r * 0.34, r * 0.15, 0, 0, r);
+    body.addColorStop(0, "#4a3c40");
+    body.addColorStop(0.45, "#24181c");
+    body.addColorStop(1, "#10090c");
+    ctx.fillStyle = body;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(232, 196, 122, 0.9)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = -Math.PI / 2 + (i * Math.PI) / 3;
+      const x = Math.cos(a) * r * 0.46;
+      const y = Math.sin(a) * r * 0.46;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = -Math.PI / 2 + (i * Math.PI) / 3;
+      ctx.moveTo(Math.cos(a) * r * 0.46, Math.sin(a) * r * 0.46);
+      ctx.lineTo(Math.cos(a) * r * 0.92, Math.sin(a) * r * 0.92);
+    }
+    ctx.stroke();
+    ctx.fillStyle = "#f4d27a";
+    ctx.shadowColor = "#f4d27a";
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.arc(0, 0, 3.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+
+  drawTurret(ctx, flash) {
+    ctx.fillStyle = "#2c2428";
+    ctx.strokeStyle = "#e8c47a";
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.arc(0, 0, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#3a3034";
+    ctx.beginPath();
+    ctx.roundRect(4, -5, 24, 10, 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.strokeStyle = "#f4f1ea";
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.moveTo(12, -2.2);
+    ctx.lineTo(26, -2.2);
+    ctx.moveTo(12, 2.2);
+    ctx.lineTo(26, 2.2);
+    ctx.stroke();
+    if (!flash) return;
+    ctx.fillStyle = "#fff";
+    ctx.shadowColor = "#fff";
+    ctx.shadowBlur = 16;
+    ctx.beginPath();
+    ctx.arc(32, 0, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+
+  drawEnemy(ctx, e) {
+    ctx.save();
+    ctx.translate(e.x, e.y);
+    const clock = this.run?.clock || 0;
+    if (e.boss) paintBoss(ctx, e, clock);
+    else if (e.type === "mite" || e.type === "blade" || e.type === "mote" || e.type === "shard" || e.type === "wisp") paintMinion(ctx, e, clock);
+    else {
+    ctx.fillStyle = e.color;
+    ctx.strokeStyle = e.color;
+    ctx.shadowColor = e.color;
+    ctx.shadowBlur = 8;
+    if (e.type === "circle") {
+      ctx.beginPath();
+      ctx.arc(0, 0, e.r, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (e.type === "triangle" || e.type === "dash") {
+      ctx.beginPath();
+      ctx.moveTo(0, -e.r);
+      ctx.lineTo(e.r, e.r);
+      ctx.lineTo(-e.r, e.r);
+      ctx.closePath();
+      ctx.fill();
+      if (e.type === "dash") {
+        ctx.strokeStyle = "#fff7ed";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, -e.r * 0.2);
+        ctx.lineTo(0, e.r * 0.7);
+        ctx.stroke();
+      }
+    } else if (e.type === "square") {
+      ctx.fillRect(-e.r, -e.r, e.r * 2, e.r * 2);
+    } else if (e.type === "heal") {
+      ctx.beginPath();
+      ctx.arc(0, 0, e.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#052e2b";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(-e.r * 0.55, 0);
+      ctx.lineTo(e.r * 0.55, 0);
+      ctx.moveTo(0, -e.r * 0.55);
+      ctx.lineTo(0, e.r * 0.55);
+      ctx.stroke();
+    } else if (e.type === "diamond") {
+      ctx.beginPath();
+      ctx.moveTo(0, -e.r);
+      ctx.lineTo(e.r, 0);
+      ctx.lineTo(0, e.r);
+      ctx.lineTo(-e.r, 0);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      hex(ctx, 0, 0, e.r, e.color, true);
+    }
+    }
+    if (e.elite) {
+      const pulse = 0.55 + 0.45 * Math.sin(performance.now() / 140 + (e.id || 0));
+      ctx.strokeStyle = ELITE_COLORS[e.elite] || "#ffe08a";
+      ctx.shadowColor = ELITE_COLORS[e.elite] || "#ffe08a";
+      ctx.shadowBlur = 16;
+      ctx.globalAlpha = pulse;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, e.r + 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    ctx.shadowBlur = 0;
+    if (e.hp < e.maxHp || e.shield) {
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(-e.r, -e.r - 10, e.r * 2, 4);
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(-e.r, -e.r - 10, e.r * 2 * clamp(e.hp / e.maxHp, 0, 1), 4);
+      if (e.maxShield) {
+        ctx.fillStyle = "#34d399";
+        ctx.fillRect(-e.r, -e.r - 15, e.r * 2 * clamp(e.shield / e.maxShield, 0, 1), 3);
+      }
+    }
+    ctx.restore();
+  }
+
+  strokeLaser(ctx, x1, y1, x2, y2, width, alpha) {
+    const w = width || 14;
+    const shine = clamp(alpha, 0, 1);
+    const glowW = Math.max(12, Math.min(48, w * 1.3));
+    const bodyW = Math.max(4.5, Math.min(22, w * 0.58));
+    const coreW = Math.max(2, Math.min(8, w * 0.22));
+    const grad = ctx.createLinearGradient(x1, y1, x2, y2);
+    grad.addColorStop(0, `rgba(224, 242, 254, ${0.95 * shine})`);
+    grad.addColorStop(0.45, `rgba(56, 189, 248, ${0.82 * shine})`);
+    grad.addColorStop(1, `rgba(37, 99, 235, ${0.5 * shine})`);
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.globalAlpha = 0.32 * shine;
+    ctx.strokeStyle = "rgba(125, 211, 252, 0.95)";
+    ctx.lineWidth = glowW;
+    ctx.shadowColor = "rgba(56, 189, 248, 0.65)";
+    ctx.shadowBlur = 14;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 0.92 * shine;
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = bodyW;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.globalAlpha = 0.78 * shine;
+    ctx.strokeStyle = "rgba(186, 230, 253, 0.95)";
+    ctx.lineWidth = coreW;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  drawFx(ctx, f) {
+    ctx.globalAlpha = clamp(f.life * 3, 0, 0.8);
+    ctx.strokeStyle = f.color;
+    ctx.fillStyle = f.color;
+    if (f.kind === "dot") {
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, f.r || 2, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (f.kind === "ring") {
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (f.kind === "text") {
+      ctx.globalAlpha = clamp(f.life * 2.2, 0, 1);
+      ctx.font = `800 ${f.size || 18}px Manrope, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.fillText(f.text, f.x, f.y);
+    } else if (f.kind === "beam" && f.tag === "laser") {
+      const span = Math.max(0.001, f.maxLife || 0.2);
+      const fade = clamp(f.life / span, 0, 1) * clamp(f.dim ?? 1, 0.45, 1);
+      this.strokeLaser(ctx, f.x1, f.y1, f.x2, f.y2, f.w, fade);
+    } else if (f.kind === "beam") {
+      const fade = clamp(f.life * 2.4, 0, 1);
+      ctx.lineCap = "round";
+      ctx.globalAlpha = fade * 0.45;
+      ctx.strokeStyle = "#93c5fd";
+      ctx.lineWidth = Math.max(18, (f.w || 8) * 3.6);
+      ctx.shadowColor = "#60a5fa";
+      ctx.shadowBlur = 28;
+      ctx.beginPath();
+      ctx.moveTo(f.x1, f.y1);
+      ctx.lineTo(f.x2, f.y2);
+      ctx.stroke();
+      ctx.globalAlpha = fade;
+      ctx.strokeStyle = "#f8fbff";
+      ctx.lineWidth = Math.max(5, (f.w || 8) * 0.9);
+      ctx.shadowColor = "#ffffff";
+      ctx.shadowBlur = 16;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.lineCap = "butt";
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  sendCoop(msg) {
+    const ws = this.coop?.ws;
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg));
+  }
+
+  beginCoop(data) {
+    this.coop = this.coop || {};
+    this.coop.seat = data.seat;
+    this.coop.t0 = data.t0;
+    this.coop.offset = (data.now || data.t0) - Date.now();
+    this.coop.tick = -1;
+    this.coop.inputs = [{}, {}];
+    this.coop.lastIn = [null, null];
+    this.coop.acts = {};
+    this.coop.live = true;
+    this.coopLock = true;
+    this.coopWorld = { w: data.worldW, h: data.worldH };
+    this.rand = mulberry32(data.seed >>> 0);
+    if (!this.headless) this.resize();
+    else {
+      this.worldW = data.worldW;
+      this.worldH = data.worldH;
+    }
+    const mine = this.profile;
+    if (data.profile) this.profile = data.profile;
+    this.startRun(data.level);
+    this.profile = mine;
+    ensureSeats(this.run, this.worldW, this.worldH);
+    this.ui.showPlay();
+  }
+
+  onCoop(msg) {
+    if (!this.coop) return;
+    if (msg.t === "in") {
+      const bag = this.coop.inputs[msg.seat] || (this.coop.inputs[msg.seat] = {});
+      bag[msg.tick] = { x: Number(msg.x) || 0, y: Number(msg.y) || 0, down: !!msg.down };
+      return;
+    }
+    if (!msg.applyTick && msg.applyTick !== 0) return;
+    const list = this.coop.acts[msg.applyTick] || (this.coop.acts[msg.applyTick] = []);
+    list.push(msg);
+  }
+
+  applyCoopTick(tick) {
+    const seats = this.run?.seats;
+    if (seats) {
+      for (let i = 0; i < seats.length; i++) {
+        const queued = this.coop.inputs[i]?.[tick];
+        if (queued) {
+          this.coop.lastIn[i] = queued;
+          delete this.coop.inputs[i][tick];
+        }
+        const inp = this.coop.lastIn[i];
+        if (!inp) continue;
+        seats[i].pointer.x = inp.x;
+        seats[i].pointer.y = inp.y;
+        seats[i].pointer.down = inp.down;
+      }
+    }
+    const acts = this.coop.acts[tick];
+    if (!acts) return;
+    delete this.coop.acts[tick];
+    for (const act of acts) this.applyCoopAct(act);
+  }
+
+  applyCoopAct(act) {
+    this._coopEcho = true;
+    try {
+      if (act.t === "pick") {
+        const card = (this.run?._cards || []).find((item) => item.id === act.id);
+        if (card) this.applyCard(card);
+      } else if (act.t === "reroll") this.rerollOffer(Number(act.used) || 0);
+      else if (act.t === "continue") this.continueLevel();
+      else if (act.t === "endless") this.beginEndless();
+      else if (act.t === "exit") this.exitAfterLevel();
+    } finally {
+      this._coopEcho = false;
+    }
+  }
+
+  stepCoop() {
+    const frame = 1000 / 60;
+    const now = Date.now() + (this.coop.offset || 0);
+    const target = Math.floor((now - this.coop.t0) / frame);
+    let guard = 0;
+    while (this.coop.tick < target && guard++ < 5) {
+      this.coop.tick += 1;
+      const tick = this.coop.tick;
+      if (tick % 2 === 0) {
+        this.sendCoop({
+          t: "in",
+          tick: tick + 8,
+          x: this.pointer.x,
+          y: this.pointer.y,
+          down: this.pointer.down,
+        });
+      }
+      this.applyCoopTick(tick);
+      this.update(1 / 60);
+    }
+  }
+
+  loop(t) {
+    if (this.coop?.live) {
+      this.stepCoop();
+      requestAnimationFrame((n) => this.loop(n));
+      return;
+    }
+    if (this.remote) {
+      this.draw(0);
+      const due = this.remoteAction || (this.state === "play" && t - (this.syncedAt || 0) > 80);
+      if (due && !this.syncing && api?.battleSync) {
+        this.syncing = true;
+        const action = this.remoteAction;
+        this.remoteAction = null;
+        api.battleSync({
+          pointer: { x: this.pointer.x, y: this.pointer.y, down: this.pointer.down },
+          speed: this.speed || 1,
+          worldW: this.worldW,
+          worldH: this.worldH,
+          action: action?.action || "",
+          cardId: action?.cardId || "",
+        }).then((data) => {
+          if (data?.snap) this.applySnap(data.snap);
+          if (data?.profile) this.ui.applyProfile?.(data.profile);
+        }).catch((error) => {
+          this.ui.toast(error.message || "Нет связи с боем");
+        }).finally(() => {
+          this.syncing = false;
+          this.syncedAt = performance.now();
+        });
+      }
+      requestAnimationFrame((n) => this.loop(n));
+      return;
+    }
+    const dt = Math.min(0.033, (t - (this.last || t)) / 1000) * (this.speed || 1);
+    this.last = t;
+    if (this.paused && this.state === "play") this.draw(0);
+    else this.update(dt);
+    requestAnimationFrame((n) => this.loop(n));
+  }
+
+  async startRemote(level) {
+    const data = await api.battleStart({
+      level,
+      worldW: this.worldW,
+      worldH: this.worldH,
+    });
+    this.remote = true;
+    this.syncedAt = 0;
+    this.applySnap(data.snap);
+    this.ui.showPlay();
+  }
+
+  applySnap(snap) {
+    const prev = this.state;
+    this.state = snap.state;
+    if (snap.worldW) this.worldW = snap.worldW;
+    if (snap.worldH) this.worldH = snap.worldH;
+    this.shake = snap.shake || 0;
+    this.run = snap.run;
+    this.ui.updateHud(this.run);
+    this.ui.setCombo?.(this.run);
+    for (const text of snap.toasts || []) this.ui.toast(text);
+    if (snap.state === "cards" && snap.cardKey !== this.cardKey) {
+      this.cardKey = snap.cardKey;
+      this.ui.showCards(snap.cards, snap.heading, snap.rerollUsed || 0);
+    }
+    if (snap.state === "play" && prev === "cards") this.ui.hideCards();
+    if (snap.state === "levelclear" && prev !== "levelclear" && snap.levelClear) this.ui.showLevelClear(snap.levelClear);
+    if (snap.state === "play" && prev === "levelcle
