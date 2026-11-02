@@ -1,0 +1,469 @@
+import "./style.css";
+import { Game, WEAPON_INFO } from "./game.js";
+import { Synth } from "./audio.js";
+import { loadMeta, saveMeta } from "./storage.js";
+import { BOSS_RULES, CRYSTAL_SHOP, SHAPES, damageShares, weaponColor, weaponLabel } from "./content.js";
+import { api, newId } from "./api.js";
+import { describeAffix, partFamilyLabel, partNote, activeSets, polishedText } from "./parts.js";
+import { canUpgrade, polishCost, salvageValue, DUST_PACK, POLISH_MAX } from "./salvage.js";
+import { nextSpeed, speedLabel } from "./speed.js";
+import { rerollLabel, rerollPrice } from "./reroll.js";
+import { activeSynergies, SYNERGIES } from "./synergy.js";
+import { collectionNews, formatFresh } from "./collection.js";
+import { accountGrantLine, accountRewardBits, accountStepLabel, accountTrack, accountXpNeed } from "./account.js";
+import { hordeRuleById, hordeRuleFor, moscowDay } from "./horde.js";
+import { HANGAR_TREE, hangarCost, hangarMax, hangarUnlocked, hangarNode } from "./hangar.js";
+import { retryPendingClaims, retryPendingPartRolls } from "./game.js";
+
+const $ = (id) => document.getElementById(id);
+
+const CARD_ICONS = {
+  gun: `<svg viewBox="0 0 64 64"><rect x="29" y="6" width="6" height="26" rx="1" fill="currentColor"/><rect x="16" y="28" width="32" height="8" rx="1" fill="currentColor"/><circle cx="32" cy="48" r="8" fill="none" stroke="currentColor" stroke-width="3"/></svg>`,
+  laser: `<svg viewBox="0 0 64 64"><path d="M10 32h44" stroke="currentColor" stroke-width="4"/><path d="M32 8v16M32 40v16" stroke="currentColor" stroke-width="3"/><circle cx="32" cy="32" r="7" fill="none" stroke="currentColor" stroke-width="3"/></svg>`,
+  scatter: `<svg viewBox="0 0 64 64"><path d="M32 50 L14 16 M32 50 L32 16 M32 50 L50 16" stroke="currentColor" stroke-width="4" fill="none"/></svg>`,
+  grenade: `<svg viewBox="0 0 64 64"><circle cx="32" cy="36" r="16" fill="none" stroke="currentColor" stroke-width="3"/><rect x="28" y="12" width="8" height="10" fill="currentColor"/></svg>`,
+  emp: `<svg viewBox="0 0 64 64"><path d="M12 32h10l6-14 8 28 6-14h10" fill="none" stroke="currentColor" stroke-width="4"/></svg>`,
+  orb: `<svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="8" fill="currentColor"/><circle cx="32" cy="32" r="20" fill="none" stroke="currentColor" stroke-width="3"/></svg>`,
+  drone: `<svg viewBox="0 0 64 64"><circle cx="16" cy="20" r="6" fill="none" stroke="currentColor" stroke-width="3"/><circle cx="48" cy="20" r="6" fill="none" stroke="currentColor" stroke-width="3"/><path d="M22 22h20M32 22v18" stroke="currentColor" stroke-width="3"/><circle cx="32" cy="46" r="6" fill="currentColor"/></svg>`,
+  general: `<svg viewBox="0 0 64 64"><path d="M32 8l6 14h16l-12 10 4 16-14-8-14 8 4-16L10 22h16z" fill="currentColor"/></svg>`,
+};
+
+function weaponIdOf(who) {
+  return Object.entries(WEAPON_INFO).find(([, info]) => info.name === who)?.[0] || null;
+}
+
+function weaponLevel(run, id) {
+  if (!id || !run?.weapons?.[id]) return 0;
+  return 1 + (run.pips?.[id] || []).length;
+}
+
+function starRow(n) {
+  if (!n) return "";
+  let html = `<span class="stars">`;
+  for (let i = 0; i < n; i++) html += `<i class="on"></i>`;
+  return `${html}</span>`;
+}
+
+function cardIcon(card) {
+  return CARD_ICONS[weaponIdOf(card.who)] || CARD_ICONS.general;
+}
+
+const CARD_RARITY_LABELS = {
+  common: "Обычная",
+  rare: "Редкая",
+  epic: "Эпическая",
+  legendary: "Легендарная",
+};
+
+function loadoutSlots(run) {
+  const owned = Object.keys(run?.weapons || {}).filter((id) => run.weapons[id] && WEAPON_INFO[id]);
+  let html = "";
+  for (let i = 0; i < 5; i++) {
+    const id = owned[i];
+    if (!id) {
+      html += `<div class="slot empty"></div>`;
+      continue;
+    }
+    const info = WEAPON_INFO[id];
+    html += `<div class="slot" style="color:${info.color}">${CARD_ICONS[id]}<b>${info.name}</b>${starRow(weaponLevel(run, id))}</div>`;
+  }
+  return html;
+}
+
+const audio = new Synth();
+let meta = loadMeta();
+let profile = null;
+
+const ui = {
+  save() {
+    saveMeta(meta);
+    refreshMenu();
+  },
+  showPlay() {
+    hideAll();
+    setHubChrome(false);
+    $("hud").classList.remove("hidden");
+    $("build-overlay").classList.add("hidden");
+    $("result-report").classList.add("hidden");
+    retryPendingClaims(applyProfile);
+    retryPendingPartRolls(game);
+  },
+  updateHud(run) {
+    this.setWaveHud(run);
+    $("hud-chapter").textContent = `${run.chapterNum || 1}-${run.level}`;
+    $("hud-coins").textContent = String(run.coins);
+    $("hud-crit").textContent = `${Math.round((run.crit?.chance || 0) * 100)}%`;
+    this.setCore(run);
+    const box = $("weapons");
+    const names = Object.keys(run.weapons || {}).filter((k) => run.weapons[k]);
+    const pips = run.pips || {};
+    box.innerHTML = names.map((k) => {
+      const info = WEAPON_INFO[k];
+      const dots = (pips[k] || []).map((kind) => `<i class="${kind === "legendary" ? "leg" : ""}" style="background:${kind === "legendary" ? "#ffb347" : info.color}"></i>`).join("");
+      return `<div class="wep"><b style="color:${info.color}">${info.name}</b>${dots ? `<span class="pips">${dots}</span>` : ""}</div>`;
+    }).join("");
+  },
+  setWaveHud(run) {
+    const wave = $("hud-wave");
+    const label = $("hud-wave-label");
+    if (!wave || !run) return;
+    const hordeLine = $("hud-horde");
+    if (hordeLine) {
+      const rule = run.endless ? hordeRuleById(run.hordeRule) : null;
+      hordeLine.classList.toggle("hidden", !rule);
+      hordeLine.textContent = rule ? `${rule.title}. ${rule.text}` : "";
+    }
+    const shown = run.endless ? Math.max(1, (run.wave || 11) - 10) : run.wave;
+    if (run.endless && run.waveTimer > 0) {
+      if (label) label.textContent = "ВОЛНА";
+      wave.textContent = `${shown} · ${Math.ceil(run.waveTimer)}`;
+    } else {
+      if (label) label.textContent = "ВОЛНА";
+      wave.textContent = String(shown);
+    }
+  },
+  setCore(run) {
+    this.setWaveHud(run);
+    const tower = run?.tower;
+    if (tower && $("hud-hp")) {
+      const hp = Math.max(0, Math.min(1, tower.hp / (tower.maxHp || 1)));
+      $("hud-hp").style.width = `${hp * 100}%`;
+      $("hud-hp").style.background = hp < 0.3 ? "#ff5d7a" : "#7ee8ff";
+    }
+    const lives = $("hud-lives");
+    if (lives) {
+      const n = run?.lives || 0;
+      lives.classList.toggle("hidden", n <= 0);
+      lives.textContent = n > 0 ? `ЖИЗНИ ${n}` : "";
+    }
+    const bossBar = $("hud-boss");
+    const boss = (run?.enemies || []).find((e) => e.boss && !e.dead);
+    if (bossBar) {
+      bossBar.classList.toggle("hidden", !boss);
+      if (boss) {
+        $("hud-boss-name").textContent = boss.name || "Босс";
+        $("hud-boss-rule").textContent = BOSS_RULES[boss.bossId] || "";
+        const fill = Math.max(0, Math.min(1, boss.hp / (boss.maxHp || 1)));
+        $("hud-boss-hp").style.width = `${fill * 100}%`;
+      }
+    }
+    const drive = run?.overdrive;
+    if (drive && $("hud-drive")) {
+      const hot = drive.left > 0;
+      $("hud-drive-label").textContent = hot ? "ОВЕРДРАЙВ" : "ЗАРЯД";
+      const fill = hot ? drive.left / drive.dur : drive.charge / drive.max;
+      $("hud-drive").style.width = `${Math.max(0, Math.min(1, fill || 0)) * 100}%`;
+      $("core-status").classList.toggle("hot", hot);
+    }
+  },
+  setCombo(run) {
+    const el = $("combo");
+    if (run.combo < 2 || !run.comboType) {
+      el.classList.add("hidden");
+      return;
+    }
+    const names = { circle: "●", triangle: "▲", square: "■", hex: "⬢", diamond: "◆", boss: "✸", mite: "▴", blade: "☽", mote: "◉", shard: "⬡", wisp: "✦" };
+    el.classList.remove("hidden");
+    $("combo-text").textContent = `${names[run.comboType] || "●"} × ${run.combo}`;
+  },
+  showCards(cards, heading, used = 0) {
+    setHubChrome(false);
+    $("screen-cards").classList.remove("hidden");
+    if (heading) {
+      $("cards-title").textContent = heading.title;
+      $("cards-sub").textContent = heading.sub;
+    }
+    const price = rerollPrice(used);
+    const reroll = $("btn-reroll");
+    reroll.textContent = rerollLabel(price);
+    reroll.disabled = !price;
+    reroll.dataset.used = String(used);
+    reroll.classList.toggle("hidden", heading?.reroll === false);
+    $("card-row").innerHTML = "";
+    $("card-loadout").innerHTML = loadoutSlots(game.run);
+    cards.forEach((card) => {
+      const btn = document.createElement("button");
+      btn.className = `card ${card.rarity}`;
+      const who = card.who && card.who !== "Общая карта" && card.who !== card.title ? card.who : "";
+      const level = weaponLevel(game.run, weaponIdOf(card.who));
+      const rarity = CARD_RARITY_LABELS[card.rarity] || CARD_RARITY_LABELS.common;
+      btn.innerHTML = `<span class="card-rarity">${rarity}</span><span class="card-ico">${cardIcon(card)}</span>${who ? `<em>${who}</em>` : ""}${starRow(level)}<strong>${card.title}</strong><p>${card.desc}</p>`;
+      btn.onclick = () => game.applyCard(card);
+      $("card-row").appendChild(btn);
+    });
+  },
+  hideCards() {
+    $("screen-cards").classList.add("hidden");
+  },
+  showLevelClear(info) {
+    setHubChrome(false);
+    $("hud").classList.add("hidden");
+    $("screen-level-clear").classList.remove("hidden");
+    const chapter = info.chapter || 1;
+    const chapterPrefix = chapter > 1 ? `ГЛАВА ${chapter} · ` : "";
+    $("clear-title").textContent = `${chapterPrefix}УРОВЕНЬ ${info.level} ПРОЙДЕН`;
+    $("clear-coins").textContent = `+${info.coins}`;
+    $("clear-crystals").textContent = info.crystals ? `+${info.crystals}` : "0";
+    $("clear-note").textContent = info.crystals
+      ? "Кристаллы за первое прохождение придут вместе с наградой забега."
+      : "Этот уровень уже был пройден. Кристаллы за него больше не выдаются.";
+    $("clear-part").textContent = "";
+    $("clear-part").classList.add("hidden");
+    $("btn-next-level").classList.toggle("hidden", !info.canNext);
+    $("btn-next-chapter").classList.toggle("hidden", !info.chapterDone);
+    $("btn-next-chapter").textContent = `ГЛАВА ${chapter + 1}`;
+    paintHordeRule();
+  },
+  setLevelClearPart(line) {
+    const el = $("clear-part");
+    if (!line) {
+      el.textContent = "";
+      el.classList.add("hidden");
+      return;
+    }
+    el.textContent = line;
+    el.classList.remove("hidden");
+  },
+  hideLevelClear() {
+    $("screen-level-clear").classList.add("hidden");
+    $("hud").classList.remove("hidden");
+  },
+  async onEndlessWave(level, wave, partLine, runId) {
+    const partSuffix = partLine ? ` · ${partLine}` : "";
+    const shown = Math.max(1, Number(wave) - 10);
+    try {
+      const result = await api.claimEndless(level, wave, runId);
+      if (result.profile) applyProfile(result.profile);
+      const crystalText = result.granted
+        ? `+${result.granted} кристаллов за волну ${shown}`
+        : `Волна ${shown} уже была забрана`;
+      const coinBit = result.coins ? `, +${result.coins} монет` : "";
+      if (result.coins && game.run) game.run.hordeCoins = (game.run.hordeCoins || 0) + result.coins;
+      ui.toast(`${crystalText}${coinBit}${partSuffix}`);
+      return result.granted || 0;
+    } catch {
+      ui.toast(`Кристаллы за волну придут при появлении связи${partSuffix}`);
+      return 0;
+    }
+  },
+  showResult(win, run, granted, extra = {}) {
+    setHubChrome(false);
+    $("hud").classList.add("hidden");
+    $("build-overlay").classList.add("hidden");
+    $("screen-result").classList.remove("hidden");
+    const horde = !!run.hordeDone;
+    $("result-horde").classList.toggle("hidden", !horde);
+    if (horde) {
+      $("horde-waves").textContent = String(run.endlessWaves || 0);
+      $("horde-crystals").textContent = `+${run.endlessCrystals || 0}`;
+      const parts = run.endlessParts || [];
+      $("horde-parts").textContent = parts.length ? parts.join("\n") : "Запчастей не выпало.";
+      const ruleCoins = run.hordeCoins || 0;
+      $("horde-coins").textContent = ruleCoins ? `Монеты правила: +${ruleCoins}` : "";
+      $("horde-coins").classList.toggle("hidden", !ruleCoins);
+    }
+    $("result-title").textContent = horde ? "ОРДА ПРОЙДЕНА" : win ? "ГЛАВА УДЕРЖАНА" : "ЯДРО ПАЛО";
+    renderReport(run);
+    const chapter = run.chapterNum || 1;
+    $("result-wave").textContent = chapter > 1 ? `Гл.${chapter} · ${run.level}` : String(run.level);
+    const kills = run.kills && typeof run.kills === "object"
+      ? Object.values(run.kills).reduce((sum, n) => sum + Number(n || 0), 0)
+      : run.kills;
+    $("result-kills").textContent = String(kills || 0);
+    if (extra.pending || !granted) {
+      $("result-sub").textContent = run.hordeDone
+        ? "30-я волна орды. Дальше орда не идёт. Награда забега придёт при появлении связи."
+        : "Награда будет выдана при появлении связи";
+      $("result-coins").textContent = "…";
+      $("result-crystals").textContent = "…";
+      $("result-account").textContent = "";
+      $("result-account").classList.add("hidden");
+      return;
+    }
+    const fullRun = win && (run.startedLevel || 1) === 1;
+    $("result-sub").textContent = run.hordeDone
+      ? "30-я волна орды. Дальше орда не идёт. Награда забега уже на аккаунте."
+      : fullRun
+      ? "Все 3 уровня пройдены. Награда уже на аккаунте."
+      : win
+        ? `Уровень ${run.level} пройден. Награда уже на аккаунте.`
+        : `Уровень ${run.level} не удержан. Награда уже на аккаунте.`;
+    $("result-coins").textContent = `+${granted.coins || 0}`;
+    $("result-crystals").textContent = `+${granted.crystals || 0}`;
+    const accountLine = accountGrantLine(granted.account);
+    $("result-account").textContent = accountLine;
+    $("result-account").classList.toggle("hidden", !accountLine);
+    const dustBit = granted.dust ? `, пыль +${granted.dust}` : "";
+    ui.toast(`+${granted.coins || 0} монет, +${granted.crystals || 0} кристаллов${dustBit}`, 2600);
+  },
+  toast(text, ms = 1400) {
+    const el = $("toast");
+    el.textContent = text;
+    el.classList.remove("hidden");
+    clearTimeout(ui._t);
+    ui._t = setTimeout(() => el.classList.add("hidden"), ms);
+  },
+};
+
+const game = new Game($("game"), ui, audio, meta);
+
+const SCREENS = [
+  "screen-login",
+  "screen-menu",
+  "screen-levels",
+  "screen-coop",
+  "screen-hangar",
+  "screen-parts",
+  "screen-shop",
+  "screen-dailies",
+  "screen-how",
+  "screen-collection",
+  "screen-settings",
+  "screen-save",
+  "screen-dev",
+  "screen-cards",
+  "screen-result",
+  "screen-level-clear",
+];
+const HUB_TABS = {
+  play: { screen: "screen-menu", render: refreshMenu },
+  hangar: { screen: "screen-hangar", render: () => renderHangar() },
+  parts: { screen: "screen-parts", render: () => renderParts() },
+  shop: { screen: "screen-shop", render: () => renderShop() },
+  tasks: { screen: "screen-dailies", render: () => renderTasks() },
+};
+const FURTHEST_LEVEL = 40;
+const SEEN_PARTS_KEY = "roguebullet-seen-parts";
+const SAVE_PROMPT_KEY = "roguebullet-save-prompt-shown";
+const SHOP_WEAPONS = ["laser", "scatter", "grenade", "emp", "orb", "drone"];
+const DAILY_TITLES = {
+  wave3: "Пройти 3-ю волну",
+  wave6: "Пройти 6-ю волну",
+  kills40: "Убить 40 врагов",
+  kills80: "Убить 80 врагов",
+  kills150: "Убить 150 врагов",
+  level: "Пройти 1 уровень",
+  endless5: "Дойти до 5-й волны орды",
+  endless8: "Дойти до 8-й волны орды",
+  endless12: "Дойти до 12-й волны орды",
+  chest: "Открыть сундук",
+  salvage: "Разобрать деталь",
+  dust: "Купить пыль",
+};
+const ACHIEVEMENT_TITLES = {
+  first_blood: "Первая кровь",
+  first_boss: "Первый босс",
+  three_levels: "Три уровня",
+  kills_100: "Сотня",
+  kills_500: "Полтысячи",
+  kills_2000: "Две тысячи",
+  hangar: "Ангар",
+  hangar_10: "Инженер",
+  chest: "Сундук",
+  chest_10: "Кладоискатель",
+  endless_10: "Орда: 10 волн",
+  endless_25: "Орда: 25 волн",
+  chapter_1: "Глава 1 пройдена",
+  chapter_2: "Глава 2 пройдена",
+  chapter_3: "Глава 3 пройдена",
+  chapter_4: "Глава 4 пройдена",
+  chapter_5: "Глава 5 пройдена",
+  chapter_6: "Глава 6 пройдена",
+  chapter_7: "Глава 7 пройдена",
+  chapter_8: "Глава 8 пройдена",
+};
+const PART_RARITY_LABELS = {
+  legendary: "Легендарная",
+  epic: "Эпическая",
+  rare: "Редкая",
+  common: "Обычная",
+};
+const STASH_FAMILY_ORDER = ["gun", "laser", "scatter", "grenade", "emp", "orb", "drone", "common"];
+const STASH_RARITY_ORDER = ["legendary", "epic", "rare", "common"];
+
+function hideAll() {
+  for (const id of SCREENS) $(id).classList.add("hidden");
+}
+
+function setHubChrome(on) {
+  $("hub-top").classList.toggle("hidden", !on);
+  $("tabbar").classList.toggle("hidden", !on);
+}
+
+function openScreen(id) {
+  hideAll();
+  setHubChrome(false);
+  $(id).classList.remove("hidden");
+}
+
+let activeTab = "play";
+
+function showTab(name) {
+  const tab = HUB_TABS[name] || HUB_TABS.play;
+  activeTab = HUB_TABS[name] ? name : "play";
+  hideAll();
+  $("hud").classList.add("hidden");
+  $("build-overlay").classList.add("hidden");
+  $("result-report").classList.add("hidden");
+  setHubChrome(true);
+  $(tab.screen).classList.remove("hidden");
+  document.querySelectorAll("#tabbar .tab").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.tab === activeTab);
+  });
+  if (activeTab === "parts") markPartsSeen();
+  tab.render?.();
+  refreshMenu();
+  updateBadges();
+}
+
+function applyProfile(next) {
+  profile = next;
+  game.profile = next;
+  refreshMenu();
+  updateBadges();
+}
+
+ui.applyProfile = applyProfile;
+
+function refreshMenu() {
+  $("menu-account").textContent = String(profile?.accountLevel || 1);
+  $("menu-coins").textContent = String(profile?.coins || 0);
+  $("menu-crystals").textContent = String(profile?.crystals || 0);
+  const furthest = furthestOpenLevel();
+  const fchap = Math.floor((furthest - 1) / 5) + 1;
+  const fsub = ((furthest - 1) % 5) + 1;
+  $("btn-play").textContent = `В БОЙ · УРОВЕНЬ ${fchap}-${fsub}`;
+  const tester = !!profile?.tester;
+  $("btn-coop").hidden = !tester;
+  $("btn-dev").hidden = !tester;
+  paintAccountTrack();
+  paintHordeRule();
+  paintCollectionHub();
+}
+
+function currentHordeRule() {
+  return hordeRuleById(profile?.hordeRule) || hordeRuleFor(moscowDay());
+}
+
+function paintHordeRule() {
+  const rule = currentHordeRule();
+  const menu = $("menu-horde-rule");
+  if (menu) menu.textContent = `Орда сегодня: ${rule.title}. ${rule.text}`;
+  const clear = $("clear-horde-rule");
+  if (clear) clear.textContent = `${rule.title}. ${rule.text}`;
+}
+
+function paintAccountTrack() {
+  const level = profile?.accountLevel || 1;
+  const xp = Number(profile?.xp) || 0;
+  const need = Number(profile?.accountXpNeed) || accountXpNeed(level);
+  const track = profile?.accountTrack?.length ? profile.accountTrack : accountTrack(level);
+  $("account-level-label").textContent = `Ур. ${level}`;
+  $("account-xp").textContent = `${xp} / ${need}`;
+  const pct = need > 0 ? Math.max(0, Math.min(100, (xp / need) * 100)) : 0;
+  $("account-xp-fill").style.width = `${pct}%`;
+  const nextBits = accountRewardBits(track[0]);
+  $("account-next").textContent = nextBits.length ? `Дальше: ${nextBits.join(", ")}` : "";
+  $("account-steps").innerHTML = track
+    .map((step, index) => {
+      con
