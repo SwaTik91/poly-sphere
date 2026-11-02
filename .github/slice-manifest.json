@@ -45,30 +45,12 @@
           "n": 2000,
           "side": "end"
         },
-        {
-          "fill": "A",
-          "n": 2000
-        },
-        {
-          "fill": "A",
-          "n": 2000
-        },
-        {
-          "fill": "A",
-          "n": 2000
-        },
-        {
-          "fill": "A",
-          "n": 2000
-        },
-        {
-          "fill": "A",
-          "n": 2000
-        },
-        {
-          "fill": "A",
-          "n": 2000
-        },
+        {"fill": "A", "n": 2000},
+        {"fill": "A", "n": 2000},
+        {"fill": "A", "n": 2000},
+        {"fill": "A", "n": 2000},
+        {"fill": "A", "n": 2000},
+        {"fill": "A", "n": 2000},
         {
           "file": "_slicebuild/j03/08.txt",
           "pad": "A",
@@ -76,6 +58,23 @@
           "side": "start"
         },
         "_slicebuild/j03/09.txt"
+      ]
+    },
+    {
+      "path": "source-parts/art-packed/public__guns__00-gatling.png.b64/part-01.txt",
+      "size": 20000,
+      "sha256": "e0b2c9b24f821f9da03ff9d59a455f80413c575d365737ac6d33c3a0912ae9e4",
+      "chunks": [
+        "_slicebuild/j04/00.txt",
+        "_slicebuild/j04/01.txt",
+        "_slicebuild/j04/02.txt",
+        "_slicebuild/j04/03.txt",
+        "_slicebuild/j04/04.txt",
+        "_slicebuild/j04/05.txt",
+        "_slicebuild/j04/06.txt",
+        "_slicebuild/j04/07.txt",
+        "_slicebuild/j04/08.txt",
+        "_slicebuild/j04/09.txt"
       ]
     }
   ],
