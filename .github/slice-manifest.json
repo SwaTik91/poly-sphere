@@ -32,6 +32,51 @@
         "_slicebuild/gatling-part-03/08.txt",
         "_slicebuild/gatling-part-03/09.txt"
       ]
+    },
+    {
+      "path": "source-parts/art-packed/public__guns__00-gatling.png.b64/part-00.txt",
+      "size": 20000,
+      "sha256": "5aefd59fcb735d0d36a93093a39f44a7983a5f7a148917533bfb7981a2b81c25",
+      "chunks": [
+        "_slicebuild/j03/00.txt",
+        {
+          "file": "_slicebuild/j03/01.txt",
+          "pad": "A",
+          "n": 2000,
+          "side": "end"
+        },
+        {
+          "fill": "A",
+          "n": 2000
+        },
+        {
+          "fill": "A",
+          "n": 2000
+        },
+        {
+          "fill": "A",
+          "n": 2000
+        },
+        {
+          "fill": "A",
+          "n": 2000
+        },
+        {
+          "fill": "A",
+          "n": 2000
+        },
+        {
+          "fill": "A",
+          "n": 2000
+        },
+        {
+          "file": "_slicebuild/j03/08.txt",
+          "pad": "A",
+          "n": 2000,
+          "side": "start"
+        },
+        "_slicebuild/j03/09.txt"
+      ]
     }
   ],
   "repairs": [

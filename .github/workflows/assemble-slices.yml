@@ -17,10 +17,28 @@ jobs:
           import hashlib
           import json
           from pathlib import Path
+          def piece(c):
+              if isinstance(c, str):
+                  return Path(c).read_text()
+              if "file" not in c:
+                  return c["fill"] * c["n"]
+              data = Path(c["file"]).read_text()
+              n = c.get("n")
+              if n is None:
+                  return data
+              pad = c.get("pad", "")
+              if len(data) > n:
+                  raise SystemExit(f"piece too long {c['file']} {len(data)}>{n}")
+              gap = pad * (n - len(data))
+              if len(gap) != n - len(data):
+                  raise SystemExit("pad does not tile")
+              if c.get("side") == "start":
+                  return gap + data
+              return data + gap
           manifest = json.loads(Path(".github/slice-manifest.json").read_text())
           files = manifest["files"] if isinstance(manifest, dict) else manifest
           for item in files:
-              data = "".join(Path(p).read_text() for p in item["chunks"])
+              data = "".join(piece(c) for c in item["chunks"])
               dest = Path(item["path"])
               dest.parent.mkdir(parents=True, exist_ok=True)
               dest.write_text(data)
