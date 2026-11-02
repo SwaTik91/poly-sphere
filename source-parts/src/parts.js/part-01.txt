@@ -1,0 +1,176 @@
+}
+      into.branches[family][branch] = dst;
+    }
+  }
+}
+
+function addBonus(into, bonus) {
+  if (!bonus) return;
+  for (const [key, value] of Object.entries(bonus)) {
+    if (key === "branches") mergeBranch(into, value);
+    else if (key === "empSlowMul") into.empSlowMul = (into.empSlowMul ?? 1) * value;
+    else into[key] = (into[key] || 0) + value;
+  }
+}
+
+export function sumBonuses(parts, slots) {
+  const out = { branches: {} };
+  for (const id of slots || []) {
+    if (!id) continue;
+    const part = partById(parts, id);
+    if (!part) continue;
+    const tier = findDef(part.family, part.base)?.tiers?.[part.rarity];
+    if (tier) {
+      const bonus = part.rarity === "legendary" && polishLevel(part.polish)
+        ? scaleBonusTree(tier.bonus, part.polish)
+        : tier.bonus;
+      addBonus(out, bonus);
+    }
+  }
+  addBonus(out, setBonuses(parts, slots));
+  return out;
+}
+
+function eachDrone(run, fn) {
+  if (!run.drone) return;
+  if (run.weapons && !run.weapons.drone) return;
+  fn(run.drone);
+  const extra = run.wepStats?.drone;
+  if (extra && extra !== run.drone) fn(extra);
+}
+
+export function applyBonuses(run, bonuses) {
+  if (!run || !bonuses) return;
+  run.partMods = bonuses;
+  run.partModsApplied = {};
+  const b = bonuses;
+
+  if (run.gun) run.gun.dmg *= 1 + (b.gunDmg || 0) + (b.allDmg || 0);
+  eachDrone(run, (drone) => {
+    drone.dmg *= 1 + (b.droneDmg || 0) + (b.allDmg || 0);
+    if (b.dronePierce) drone.pierce = (drone.pierce || 0) + b.dronePierce;
+  });
+
+  const laser = run.wepStats?.laser;
+  if (laser && (!run.weapons || run.weapons.laser)) {
+    laser.dmg *= 1 + (b.laserDmg || 0) + (b.allDmg || 0);
+  }
+  const scatter = run.wepStats?.scatter;
+  if (scatter && (!run.weapons || run.weapons.scatter)) {
+    scatter.dmg *= 1 + (b.scatterDmg || 0) + (b.allDmg || 0);
+    if (b.scatterKnock) scatter.knock = (scatter.knock || 0) + b.scatterKnock;
+  }
+  const grenade = run.wepStats?.grenade;
+  if (grenade && (!run.weapons || run.weapons.grenade)) {
+    const mul = 1 + (b.grenadeDmg || 0) + (b.allDmg || 0);
+    if (mul !== 1) scaleGrenade(grenade, mul);
+  }
+  const emp = run.wepStats?.emp;
+  if (emp && (!run.weapons || run.weapons.emp)) {
+    emp.dmg *= 1 + (b.empDmg || 0) + (b.allDmg || 0);
+    if (b.empRadius) emp.radius += b.empRadius;
+    if (b.empSlowDur) emp.slowDur = (emp.slowDur || 1.7) + b.empSlowDur;
+    if (b.empSlowMul) emp.slowMul = Math.max(EMP_SLOW_FLOOR, (emp.slowMul ?? 0.45) * b.empSlowMul);
+  }
+  const orb = run.wepStats?.orb;
+  if (orb && (!run.weapons || run.weapons.orb)) {
+    orb.dmg *= 1 + (b.orbDmg || 0) + (b.allDmg || 0);
+  }
+
+  if (run.tower) {
+    if (b.hp) {
+      run.tower.maxHp += b.hp;
+      run.tower.hp += b.hp;
+    }
+    if (b.regen) run.tower.regen += b.regen;
+  }
+  if (b.leech) addLeech(run, b.leech);
+  if (b.comboNeed) run.comboNeed = Math.max(3, (run.comboNeed || 6) - b.comboNeed);
+}
+
+function branchMods(run, family, branch) {
+  return run.partMods?.branches?.[family]?.[branch] || null;
+}
+
+export function applyBranchParts(run) {
+  if (!run?.partMods) return;
+  const done = (run.partModsApplied = run.partModsApplied || {});
+
+  const gunBranch = run.gun?.branch;
+  const gunMods = gunBranch && branchMods(run, "gun", gunBranch);
+  if (gunMods && !done.gun) {
+    done.gun = true;
+    if (gunMods.crit) addCrit(run, gunMods.crit);
+    if (gunMods.pellets) run.gun.pellets += gunMods.pellets;
+    if (gunMods.bounces) run.gun.bounces += gunMods.bounces;
+  }
+
+  const droneBranch = run.drone?.branch;
+  const droneMods = droneBranch && branchMods(run, "drone", droneBranch);
+  if (droneMods && !done.drone) {
+    done.drone = true;
+    eachDrone(run, (drone) => {
+      if (droneMods.count) addDrones(drone, droneMods.count);
+      if (droneMods.haste) hasten(drone, droneMods.haste);
+      if (droneMods.radius) drone.radius = (drone.radius || 0) + droneMods.radius;
+      if (droneMods.bombMul) drone.bombMul = (drone.bombMul || 0) + droneMods.bombMul;
+    });
+  }
+
+  const laser = run.wepStats?.laser;
+  const laserMods = laser?.branch && branchMods(run, "laser", laser.branch);
+  if (laserMods && !done.laser) {
+    done.laser = true;
+    if (laserMods.burn) laser.burn = (laser.burn || 0) + laserMods.burn;
+    if (laserMods.rays) addRays(laser, laserMods.rays);
+    if (laserMods.width) addWidth(laser, laserMods.width);
+    if (laserMods.bounces) addBounces(laser, laserMods.bounces);
+  }
+
+  const scatter = run.wepStats?.scatter;
+  const scatterMods = scatter?.branch && branchMods(run, "scatter", scatter.branch);
+  if (scatterMods && !done.scatter) {
+    done.scatter = true;
+    if (scatterMods.centerMul) scatter.centerMul = (scatter.centerMul || 1) * scatterMods.centerMul;
+    if (scatterMods.shards) addShards(scatter, scatterMods.shards);
+    if (scatterMods.shardMul) scatter.shardMul = (scatter.shardMul || 0.45) + scatterMods.shardMul;
+  }
+
+  const grenade = run.wepStats?.grenade;
+  const grenadeMods = grenade?.branch && branchMods(run, "grenade", grenade.branch);
+  if (grenadeMods && !done.grenade) {
+    done.grenade = true;
+    if (grenadeMods.reach) addReach(grenade, grenadeMods.reach);
+    if (grenadeMods.bombs) addBombs(grenade, grenadeMods.bombs);
+    if (grenadeMods.pool) addPool(grenade, grenadeMods.pool);
+  }
+
+  const emp = run.wepStats?.emp;
+  if (emp?.branch === "cage" && run.partMods.empSlowMul && !done.empCold) {
+    done.empCold = true;
+    emp.slowMul = Math.max(EMP_SLOW_FLOOR, (emp.slowMul ?? 0.45) * run.partMods.empSlowMul);
+  }
+  const empMods = emp?.branch && branchMods(run, "emp", emp.branch);
+  if (empMods && !done.emp) {
+    done.emp = true;
+    if (empMods.jumps) {
+      if (!emp.chain) {
+        emp.chain = "ring";
+        emp.chainMul = emp.chainMul || 0.7;
+      }
+      emp.partChain = (emp.partChain || 0) + empMods.jumps;
+    }
+    if (empMods.knock) emp.knock = (emp.knock || 0) + empMods.knock;
+  }
+
+  const orb = run.wepStats?.orb;
+  const orbMods = orb?.branch && branchMods(run, "orb", orb.branch);
+  if (orbMods && !done.orb) {
+    done.orb = true;
+    if (orbMods.reach) orb.reach = (orb.reach || 1) + orbMods.reach;
+    if (orbMods.guardHaste) hastenGuard(orb, orbMods.guardHaste);
+    if (orbMods.knock) orb.knock = (orb.knock || 0) + orbMods.knock;
+    if (orbMods.lungeMul) orb.lungeMul = (orb.lungeMul || 8) + orbMods.lungeMul;
+    if (orbMods.lungeHaste) hastenLunge(orb, orbMods.lungeHaste);
+  }
+}
