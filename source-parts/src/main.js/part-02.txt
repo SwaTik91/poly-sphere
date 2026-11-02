@@ -1,0 +1,436 @@
+ая уже надета", hint: "" };
+  }
+  const weaponFree = loadout.slice(0, 4).some((id) => !id);
+  const commonFree = loadout.slice(4, 8).some((id) => !id);
+  if (part.family == null || part.family === "common") {
+    return commonFree ? { block: "", hint: "" } : { block: "Нет свободного слота", hint: "" };
+  }
+  if (weaponFree) return { block: "", hint: "" };
+  if (commonFree) return { block: "", hint: "Сядет в общий слот" };
+  return { block: "Нет свободного слота", hint: "" };
+}
+
+function setHint(part) {
+  const loadout = profile?.loadout?.length === 8 ? profile.loadout : [];
+  const key = part?.family || "common";
+  const byId = new Map((profile?.parts || []).map((item) => [item.id, item]));
+  let count = 0;
+  for (const id of loadout) {
+    const other = id ? byId.get(id) : null;
+    if (other && (other.family || "common") === key) count += 1;
+  }
+  if (count >= 1 && count < 4) return "Ещё одна до сета";
+  return "";
+}
+
+function partCard(part, ctx) {
+  if (!part) {
+    const empty = document.createElement("div");
+    empty.className = "gear-slot empty";
+    empty.innerHTML = `<span class="gear-plus" aria-hidden="true">+</span>`;
+    return empty;
+  }
+  const card = document.createElement("button");
+  card.type = "button";
+  const rarity = part.rarity || "common";
+  const family = part.family || "common";
+  const tint = family === "common" ? "#d7deef" : weaponTint(family);
+  const effects = partEffects(part);
+  const plan = ctx.equipped ? { block: "", hint: "" } : equipPlan(part);
+  if (ctx.stash) {
+    const polished = rarity === "legendary" && (part.polish || 0) > 0 ? " is-polished" : "";
+    card.className = `loot-card rarity-${rarity}${plan.block ? " is-blocked" : ""}${polished}`;
+    const lines = effects
+      .map((row) => `<span class="loot-fx">${escapeHtml(row.name)}</span><strong class="loot-val">${escapeHtml(row.value)}</strong>`)
+      .join("");
+    const note = partNote(part.family, part.base);
+    const flag = plan.block || plan.hint || setHint(part);
+    card.innerHTML = `<span class="loot-rarity rarity-${rarity}">${escapeHtml(PART_RARITY_LABELS[rarity] || rarity)}</span><span class="loot-ico" style="color:${tint}">${familyIcon(family)}</span>${rarityStars(rarity)}${polishPips(part)}<b>${escapeHtml(part.baseName || part.base)}</b>${lines}${note ? `<span class="loot-note">${escapeHtml(note)}</span>` : ""}${flag ? `<span class="loot-flag${plan.block ? " warn" : ""}">${escapeHtml(flag)}</span>` : ""}`;
+  } else {
+    const polished = rarity === "legendary" && (part.polish || 0) > 0 ? " is-polished" : "";
+    card.className = `gear-slot rarity-${rarity}${polished}`;
+    const values = effects.slice(0, 1).map((row) => `<em>${escapeHtml(row.value)}</em>`).join("");
+    card.innerHTML = `<span class="gear-ico" style="color:${tint}">${familyIcon(family)}</span><b>${escapeHtml(part.baseName || part.base)}</b>${values}${polishPips(part)}`;
+  }
+  card.addEventListener("click", () => openPartPopup(part, ctx));
+  return card;
+}
+
+function weaponTint(family) {
+  const colors = { gun: "#7ee8ff", laser: "#60a5fa", scatter: "#fbbf24", grenade: "#fb7185", emp: "#c084fc", orb: "#34d399", drone: "#f472b6" };
+  return colors[family] || "var(--text)";
+}
+
+function openPartPopup(part, ctx) {
+  const popup = $("part-popup");
+  const actions = [];
+  const plan = ctx.equipped ? { block: "", hint: "" } : equipPlan(part);
+  if (ctx.equipped) {
+    actions.push(`<button data-act="unequip">Снять</button>`);
+  } else if (plan.block) {
+    actions.push(`<button data-act="equip" disabled>${escapeHtml(plan.block)}</button>`);
+  } else {
+    actions.push(`<button data-act="equip">Надеть</button>`);
+  }
+  if (canUpgrade(part.rarity)) {
+    const copies = samePartCopies(part).length;
+    const need = Math.max(0, 2 - copies);
+    if (need === 1) actions.push(`<button data-act="upgrade" disabled>Нужна ещё одна такая же</button>`);
+    else if (need) actions.push(`<button data-act="upgrade" disabled>Нужны ещё ${need} такие же</button>`);
+    else actions.push(`<button data-act="upgrade">Улучшить качество</button>`);
+  } else {
+    const level = Math.max(0, Math.min(POLISH_MAX, Number(part.polish) || 0));
+    const cost = polishCost(level);
+    if (cost == null) actions.push(`<button data-act="polish" disabled>Полировка на максимуме</button>`);
+    else {
+      const poor = (profile?.dust || 0) < cost ? "disabled" : "";
+      actions.push(`<button data-act="polish" ${poor}>Полировать · ${cost} пыли</button>`);
+    }
+  }
+  if (!ctx.equipped) {
+    actions.push(`<button class="salvage-btn" data-act="salvage">Разобрать · +${salvageValue(part.rarity)} пыли</button>`);
+  }
+  const rarity = part.rarity || "common";
+  const hint = !ctx.equipped && plan.hint ? `<p class="part-hint">${escapeHtml(plan.hint)}</p>` : "";
+  popup.innerHTML = `<div class="part-popup-card loot-sheet rarity-${rarity}"><div class="part-popup-info">${partBlock(part)}${hint}</div><div class="part-actions">${actions.join("")}</div><button class="part-popup-close" data-act="close">Закрыть</button></div>`;
+  popup.classList.remove("hidden");
+  popup.onclick = (e) => {
+    if (e.target === popup) closePartPopup();
+  };
+  popup.querySelectorAll("button[data-act]").forEach((btn) => {
+    btn.onclick = () => {
+      const act = btn.dataset.act;
+      if (act === "close") return closePartPopup();
+      if (act === "unequip") return purchase(() => api.unequipPart(ctx.slot), renderParts);
+      if (act === "equip") return purchase(() => api.equipPart(part.id), renderParts);
+      if (act === "upgrade") return openQualityPicker(part, ctx);
+      if (act === "polish") return purchase(() => api.polishPart(part.id), renderParts);
+      if (act === "salvage") {
+        if (!confirm(`Разобрать деталь на +${salvageValue(part.rarity)} пыли? Это навсегда.`)) return;
+        return purchase(() => api.salvagePart(part.id), renderParts);
+      }
+    };
+  });
+}
+
+function openQualityPicker(part, ctx) {
+  const popup = $("part-popup");
+  const copies = samePartCopies(part);
+  const picked = new Set();
+  const nextName = NEXT_QUALITY[part.rarity] || "следующей";
+  const rarity = part.rarity || "common";
+  popup.innerHTML = `<div class="part-popup-card loot-sheet rarity-${rarity}"><div class="part-popup-info"><strong>Улучшить качество</strong><p class="sub">Выберите две такие же ${escapeHtml((PART_RARITY_LABELS[rarity] || rarity).toLowerCase())} «${escapeHtml(part.baseName || part.base)}». Они исчезнут, эта станет ${nextName}.</p><div class="fodder-list"></div></div><div class="part-actions"><button data-act="merge" disabled>Выбрано 0/2</button><button data-act="back">Назад</button></div></div>`;
+  popup.classList.remove("hidden");
+  const list = popup.querySelector(".fodder-list");
+  const merge = popup.querySelector("button[data-act=merge]");
+  for (const copy of copies) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "fodder-row";
+    const effect = partEffects(copy).map((item) => `${item.name} ${item.value}`).join(", ");
+    row.innerHTML = `<span><b>${escapeHtml(copy.baseName || copy.base)}</b><span class="sub">${escapeHtml(effect)}</span></span><span class="fodder-mark">Выбрать</span>`;
+    row.onclick = () => {
+      if (picked.has(copy.id)) picked.delete(copy.id);
+      else if (picked.size < 2) picked.add(copy.id);
+      row.classList.toggle("is-picked", picked.has(copy.id));
+      row.querySelector(".fodder-mark").textContent = picked.has(copy.id) ? "Выбрана" : "Выбрать";
+      merge.disabled = picked.size !== 2;
+      merge.textContent = picked.size === 2 ? `Повысить до ${nextName}` : `Выбрано ${picked.size}/2`;
+    };
+    list.appendChild(row);
+  }
+  popup.onclick = (e) => {
+    if (e.target === popup) closePartPopup();
+  };
+  popup.querySelector("button[data-act=back]").onclick = () => openPartPopup(part, ctx);
+  merge.onclick = () => {
+    if (picked.size !== 2) return;
+    purchase(() => api.upgradePart(part.id, [...picked]), renderParts);
+  };
+}
+
+function closePartPopup() {
+  const popup = $("part-popup");
+  if (!popup) return;
+  popup.classList.add("hidden");
+  popup.innerHTML = "";
+  popup.onclick = null;
+}
+
+function renderShop() {
+  const crystals = profile?.crystals || 0;
+  const coins = profile?.coins || 0;
+  const owned = new Set(profile?.weapons || []);
+  $("shop-crystals").textContent = String(crystals);
+  $("shop-coins").textContent = String(coins);
+  const dustButton = $("btn-dust-exchange");
+  const dustPoor = coins < DUST_PACK.coins;
+  $("shop-dust").textContent = `Пыль: ${profile?.dust || 0}`;
+  dustButton.disabled = dustPoor;
+  dustButton.textContent = dustPoor ? "МАЛО МОНЕТ" : `${DUST_PACK.coins} МОНЕТ`;
+  const rows = [
+    {
+      title: "Шанс крита",
+      desc: `+${CRYSTAL_SHOP.critBonus}% навсегда · ${Math.min(CRYSTAL_SHOP.critCap / CRYSTAL_SHOP.critBonus, Math.floor((profile?.critBonus || 0) / CRYSTAL_SHOP.critBonus))}/${CRYSTAL_SHOP.critCap / CRYSTAL_SHOP.critBonus}`,
+      label: (profile?.critBonus || 0) >= CRYSTAL_SHOP.critCap ? "МАКС" : String(CRYSTAL_SHOP.critPrice),
+      disabled: crystals < CRYSTAL_SHOP.critPrice || (profile?.critBonus || 0) >= CRYSTAL_SHOP.critCap,
+      run: () => api.buyShop("crit"),
+    },
+    ...SHOP_WEAPONS.map((id) => ({
+      title: WEAPON_INFO[id].name,
+      desc: "Покупается 1 раз. Ставится в ангаре",
+      label: owned.has(id) ? "ЕСТЬ" : String(CRYSTAL_SHOP.weaponPrice),
+      disabled: owned.has(id) || crystals < CRYSTAL_SHOP.weaponPrice,
+      run: () => api.buyShop("weapon", id),
+    })),
+    {
+      title: "Четвёртая карта",
+      desc: "В выборе усиления 4 карты вместо 3",
+      label: profile?.fourthCard ? "ЕСТЬ" : String(CRYSTAL_SHOP.fourthPrice),
+      disabled: !!profile?.fourthCard || crystals < CRYSTAL_SHOP.fourthPrice,
+      run: () => api.buyShop("fourth_card"),
+    },
+  ];
+  $("shop-list").innerHTML = rows
+    .map((row, index) => {
+      const price = /^\d+$/.test(String(row.label)) ? `◆ ${row.label}` : row.label;
+      return `<div class="shop-offer"><strong>${escapeHtml(row.title)}</strong><div class="sub">${escapeHtml(row.desc)}</div><button data-index="${index}" type="button" ${row.disabled ? "disabled" : ""}>${price}</button></div>`;
+    })
+    .join("");
+  $("shop-list").querySelectorAll("button").forEach((btn) => {
+    btn.onclick = () => purchase(rows[Number(btn.dataset.index)].run, renderShop);
+  });
+  const poor = crystals < CHEST_PRICE || gachaBusy();
+  $("btn-chest-open").disabled = poor;
+  $("btn-chest-open").textContent = crystals < CHEST_PRICE ? `НУЖНО ◆ ${CHEST_PRICE}` : `ОТКРЫТЬ ◆ ${CHEST_PRICE}`;
+  const left = CHEST_PITY - ((profile?.chestsOpened || 0) % CHEST_PITY);
+  const pityNext = left === 1;
+  $("chest-pity").textContent = pityNext
+    ? "Следующий сундук: выберите семью. Эпическая 60% или легендарная 40%."
+    : `До гарантии ещё ${left}.`;
+  renderChestFamilies(pityNext);
+}
+
+let chestFamily = "gun";
+
+function chestFamilies() {
+  const owned = new Set(profile?.weapons || []);
+  const ids = ["gun", "drone", ...SHOP_WEAPONS.filter((id) => id !== "drone" && owned.has(id)), "common"];
+  return ids.filter((id, index) => ids.indexOf(id) === index);
+}
+
+function renderChestFamilies(show) {
+  const host = $("chest-families");
+  if (!host) return;
+  host.classList.toggle("hidden", !show);
+  if (!show) return;
+  const ids = chestFamilies();
+  if (!ids.includes(chestFamily)) chestFamily = ids[0] || "gun";
+  host.innerHTML = ids
+    .map((id) => {
+      const label = id === "common" ? "Общие" : WEAPON_INFO[id]?.name || id;
+      return `<button type="button" data-family="${id}" class="${id === chestFamily ? "is-on" : ""}">${escapeHtml(label)}</button>`;
+    })
+    .join("");
+  host.querySelectorAll("button").forEach((btn) => {
+    btn.onclick = () => {
+      chestFamily = btn.dataset.family;
+      renderChestFamilies(true);
+    };
+  });
+}
+
+const CHEST_PRICE = 20;
+const CHEST_PITY = 10;
+let gachaPhase = "idle";
+let gachaTimer = 0;
+
+function gachaBusy() {
+  return gachaPhase === "shake" || gachaPhase === "open" || gachaPhase === "reveal";
+}
+
+function presentDrop(drop) {
+  if (drop?.kind === "part" && drop.part) {
+    const part = drop.part;
+    const rarity = part.rarity || "common";
+    const labels = { common: "Обычная", rare: "Редкая", epic: "Эпическая", legendary: "Легендарная" };
+    const lines = (part.affixes || []).map((affix) => describeAffix(part.family, affix)).filter(Boolean);
+    return {
+      rarity,
+      label: labels[rarity] || "Обычная",
+      title: part.baseName || part.base || "Запчасть",
+      desc: lines.join(" · ") || partFamilyLabel(part.family),
+    };
+  }
+  if (drop?.kind === "coins") {
+    const rare = Number(drop.amount) >= 200;
+    return { rarity: rare ? "rare" : "common", label: rare ? "Редкая" : "Обычная", title: "Монеты", desc: `+${drop.amount}` };
+  }
+  if (drop?.kind === "crystals") {
+    return { rarity: "common", label: "Обычная", title: "Кристаллы", desc: `+${drop.amount}` };
+  }
+  if (drop?.kind === "crit") {
+    return { rarity: "legendary", label: "Легендарная", title: "Крит", desc: `+${drop.amount}% навсегда` };
+  }
+  if (drop?.kind === "card") {
+    return { rarity: "epic", label: "Эпическая", title: drop.card || "Карта", desc: "Попадёт в следующий забег" };
+  }
+  return { rarity: "common", label: "Обычная", title: "Награда", desc: dropText(drop) };
+}
+
+function showGacha(drop) {
+  const prize = presentDrop(drop);
+  const root = $("gacha");
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  root.dataset.rarity = prize.rarity;
+  root.setAttribute("aria-hidden", "false");
+  root.classList.remove("hidden", "is-open", "is-reveal");
+  $("gacha-prize").className = `gacha-prize card ${prize.rarity} hidden`;
+  $("gacha-prize").innerHTML = `<span class="card-rarity">${escapeHtml(prize.label)}</span><strong>${escapeHtml(prize.title)}</strong><p>${escapeHtml(prize.desc)}</p>`;
+  $("gacha-hint").textContent = reduce ? "Тап — забрать" : "Тап — пропустить";
+  clearTimeout(gachaTimer);
+  gachaPhase = "shake";
+  if (reduce) {
+    revealGacha();
+    return;
+  }
+  root.classList.add("is-shake");
+  gachaTimer = setTimeout(openGachaLid, 720);
+}
+
+function openGachaLid() {
+  if (gachaPhase === "reveal" || gachaPhase === "idle") return;
+  $("gacha").classList.remove("is-shake");
+  $("gacha").classList.add("is-open");
+  gachaPhase = "open";
+  gachaTimer = setTimeout(revealGacha, 480);
+}
+
+function revealGacha() {
+  if (gachaPhase === "reveal" || gachaPhase === "idle") return;
+  clearTimeout(gachaTimer);
+  const root = $("gacha");
+  root.classList.remove("is-shake");
+  root.classList.add("is-open", "is-reveal");
+  $("gacha-prize").classList.remove("hidden");
+  $("gacha-hint").textContent = "Тап — забрать";
+  gachaPhase = "reveal";
+}
+
+function closeGacha() {
+  clearTimeout(gachaTimer);
+  const root = $("gacha");
+  root.classList.add("hidden");
+  root.classList.remove("is-shake", "is-open", "is-reveal");
+  root.setAttribute("aria-hidden", "true");
+  gachaPhase = "idle";
+  renderShop();
+}
+
+function renderDailies() {
+  const tasks = profile?.dailies || [];
+  $("daily-list").innerHTML = tasks
+    .map((task) => {
+      const title = DAILY_TITLES[task.id] || task.id;
+      const label = task.claimed ? "ЗАБРАНО" : "ЗАБРАТЬ";
+      const disabled = !task.done || task.claimed;
+      return `<div class="upgrade"><div><strong>${title}</strong><div class="sub">${crystalsLabel(task.crystals)}</div></div><button data-id="${task.id}" ${disabled ? "disabled" : ""}>${label}</button></div>`;
+    })
+    .join("");
+  $("daily-list").querySelectorAll("button").forEach((btn) => {
+    btn.onclick = () => purchase(() => api.claimDaily(btn.dataset.id), renderDailies);
+  });
+}
+
+function renderAchievements() {
+  const items = profile?.achievements || [];
+  $("achievement-list").innerHTML = items
+    .map((item) => {
+      const title = ACHIEVEMENT_TITLES[item.id] || item.id;
+      const label = item.claimed ? "ЗАБРАНО" : "ЗАБРАТЬ";
+      const disabled = !item.ready || item.claimed;
+      return `<div class="upgrade"><div><strong>${title}</strong><div class="sub">${crystalsLabel(item.crystals)}</div></div><button data-id="${item.id}" ${disabled ? "disabled" : ""}>${label}</button></div>`;
+    })
+    .join("");
+  $("achievement-list").querySelectorAll("button").forEach((btn) => {
+    btn.onclick = () => purchase(() => api.claimAchievement(btn.dataset.id), renderAchievements);
+  });
+}
+
+function crystalsLabel(amount) {
+  const n = Math.abs(Number(amount) || 0);
+  const n10 = n % 10;
+  const n100 = n % 100;
+  let word = "кристаллов";
+  if (n10 === 1 && n100 !== 11) word = "кристалл";
+  else if (n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14)) word = "кристалла";
+  return `${amount} ${word}`;
+}
+
+function dropText(drop) {
+  if (!drop) return "";
+  if (drop.kind === "coins") return `${drop.amount} монет`;
+      if (drop.kind === "crystals") return crystalsLabel(drop.amount);
+  if (drop.kind === "crit") return `+${drop.amount}% крита`;
+  if (drop.kind === "card") return `Карта: ${drop.card}`;
+  return "";
+}
+
+const LEVELS_PER_CHAPTER = 5;
+const CAMPAIGN_CHAPTERS = 8;
+
+function levelClearCrystals(abs) {
+  return 6 + Math.floor((abs - 1) / LEVELS_PER_CHAPTER) * 4;
+}
+
+function chapterBonusCrystals(chapter) {
+  return 20 + (chapter - 1) * 10;
+}
+
+function levelOpen(abs) {
+  const cleared = new Set(profile?.clearedLevels || []);
+  return abs === 1 || cleared.has(abs - 1);
+}
+
+function chapterCleared(chapter, cleared) {
+  for (let sub = 1; sub <= LEVELS_PER_CHAPTER; sub++) {
+    if (!cleared.has((chapter - 1) * LEVELS_PER_CHAPTER + sub)) return false;
+  }
+  return true;
+}
+
+function accountIsBare() {
+  const hangar = profile?.hangar || {};
+  const bought = Object.values(hangar).some((level) => Number(level) > 0);
+  return !bought && !(profile?.parts || []).length;
+}
+
+function renderLevels() {
+  const cleared = new Set(profile?.clearedLevels || []);
+  let maxChapter = 1;
+  for (let ch = 1; ch < CAMPAIGN_CHAPTERS; ch++) {
+    if (chapterCleared(ch, cleared)) maxChapter = ch + 1;
+  }
+  const blocks = [];
+  for (let ch = 1; ch <= maxChapter; ch++) {
+    const done = chapterCleared(ch, cleared);
+    const bare = ch >= 2 && accountIsBare();
+    const note = done
+      ? "Пройдена"
+      : bare
+        ? "С голого аккаунта здесь стена: сначала ангар и запчасти"
+        : `За главу: +${chapterBonusCrystals(ch)} кристаллов`;
+    blocks.push(
+      `<div class="chapter-head"><h3>Глава ${ch}</h3><span class="sub">${note}</span></div>`,
+    );
+    for (let sub = 1; sub <= LEVELS_PER_CHAPTER; sub++) {
+      const abs = (ch - 1) * LEVELS_PER_CHAPTER + sub;
+      const open = levelOpen(abs);
+      const cl = cleared.has(abs);
+      const note = !open
+        ? "Сначала пройди предыдущий"
+        : cl
+          ? "Пройден. Можно начать снова."
+          : `Первый раз: +${levelClearCrystals(abs)} кристаллов`;
+      blocks.push(
+        `<div class="upgrade level-row${cl ? " done" : ""}${open ? "" : " locked"}"><div class="level-node">${ch}-${sub}</div><div class="level-info"><div class="sub">${note}</div></div><button data-level="${abs}"
