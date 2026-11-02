@@ -1,0 +1,615 @@
+import { ENDLESS_PACK, ENDLESS_WAVE_SEC, LEVEL_WAVES, SHAPES, WEAPON_INFO, applyQueuedCard, bossForWave, bossKind, campaignWave, damageShares, endlessEnemyWave, enemyForWave, hordePackHpMul, hordeStep, isBossWave, minionForBoss, startingLoadout, waveCount, waveXpMul } from "./content.js";
+import { hordeRuleFor, moscowDay } from "./horde.js";
+import { paintBoss, paintBossShot, paintMinion } from "./bosses.js";
+import { rayEnd, reflectAngle } from "./laser.js";
+import { bulletShouldStop, gunStep, gunXpToNext, pelletAngle, reflectBullet, rollGunShot, swarmPower } from "./gun.js";
+import { legendaryOffer, rollBattleOffer, weaponMilestone } from "./draft.js";
+import { EMP_PUSH_LIMIT, empPushDistance } from "./emp.js";
+import { scatterPushCap } from "./scatter.js";
+import { api, newId } from "./api.js";
+import { ensureSeats, mulberry32, nearestSeat } from "./coop.js";
+import { sumBonuses, applyBonuses, applyBranchParts, partFamilyLabel } from "./parts.js";
+import { synergyFlags, activeSynergies } from "./synergy.js";
+import { applyHangar } from "./hangar.js";
+
+const PENDING_KEY = "roguebullet-pending-run";
+const PENDING_PART_ROLL_KEY = "roguebullet-pending-part-roll";
+
+const LEVELS = 5;
+const CHAPTERS = 8;
+const MAX_LEVEL = LEVELS * CHAPTERS;
+const ELITE_COLORS = { armor: "#7dd3fc", swift: "#f97316", burst: "#ffe08a" };
+export const OFFER_XP_MULT = 5;
+export const TOWER_BASE_HP = 220;
+export const GUN_START = {
+  dmg: 17,
+  rate: 8,
+  pellets: 1,
+  pierce: 0,
+  bounces: 0,
+  life: 1.15,
+  speed: 680,
+  gap: 12,
+  autoTurn: 2.6,
+};
+export const DRONE_START = {
+  dmg: 24,
+  count: 1,
+  cd: 0.24,
+  bombs: false,
+  radius: 64,
+  bombMul: 1.6,
+  speed: 560,
+  life: 0.9,
+  pierce: 0,
+  pellets: 1,
+  falloff: 0,
+  bombOnHit: false,
+};
+export const CRIT_START = { chance: 0.08, mul: 2 };
+export const OVERDRIVE = { max: 100, dur: 3.4, mul: 1.85, shotGain: 1.6 };
+export const RESONANCE_NEED = 6;
+export const RESONANCE_RADIUS = 210;
+export const RESONANCE_DMG = 55;
+export const RESONANCE_DMG_PER_WAVE = 6;
+
+const PART_DROP_RARITY = {
+  common: "обычная",
+  rare: "редкая",
+  epic: "эпическая",
+  legendary: "легендарная",
+};
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// Дрон держится рядом с ядром: круг уже экрана, корпус не уходит за край.
+export function droneLeash(worldW, worldH) {
+  const fit = Math.min(worldW, worldH) / 2 - 36;
+  return Math.max(160, Math.min(220, fit));
+}
+
+function parkDrone(x, y, tw, leash, worldW, worldH) {
+  let dx = x - tw.x;
+  let dy = y - tw.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist > leash && dist > 0) {
+    const k = leash / dist;
+    dx *= k;
+    dy *= k;
+  }
+  const margin = 28;
+  return {
+    x: clamp(tw.x + dx, margin, worldW - margin),
+    y: clamp(tw.y + dy, margin, worldH - margin),
+  };
+}
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const angTo = (a, b) => Math.atan2(b.y - a.y, b.x - a.x);
+const normAng = (a) => {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+};
+
+export class Game {
+  constructor(canvas, ui, audio, meta, options = {}) {
+    this.headless = !!options.headless;
+    this.remote = false;
+    this.remoteAction = null;
+    this.syncing = false;
+    this.canvas = canvas;
+    this.ctx = this.headless ? null : canvas.getContext("2d");
+    this.ui = ui;
+    this.audio = audio;
+    this.meta = meta;
+    this.dpr = 1;
+    this.scale = 1;
+    this.ox = 0;
+    this.oy = 0;
+    this.worldW = options.worldW || 720;
+    this.worldH = options.worldH || 1280;
+    this.stars = [];
+    this.pointer = { down: false, x: 360, y: 200 };
+    this.shake = 0;
+    this.speed = 1;
+    this.paused = false;
+    this.state = "boot";
+    this.queuedCard = options.queuedCard || null;
+    this.rollPart = options.rollPart ?? ((body) => api?.rollPart?.(body));
+    this.noteLevelClear = options.noteLevelClear ?? ((body) => api?.noteLevelClear?.(body));
+    this.coop = null;
+    this.coopLock = false;
+    this.coopWorld = null;
+    this.rand = Math.random;
+    if (this.headless) return;
+    this.resize();
+    window.addEventListener("resize", () => this.resize());
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", () => this.resize());
+      window.visualViewport.addEventListener("scroll", () => this.resize());
+    }
+    this.bindInput();
+  }
+
+  resize() {
+    const vv = window.visualViewport;
+    const w = Math.max(1, vv?.width || window.innerWidth);
+    const h = Math.max(1, vv?.height || window.innerHeight);
+    this.dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.canvas.width = Math.floor(w * this.dpr);
+    this.canvas.height = Math.floor(h * this.dpr);
+    this.canvas.style.width = `${w}px`;
+    this.canvas.style.height = `${h}px`;
+    if (this.coopLock && this.coopWorld) {
+      this.worldW = this.coopWorld.w;
+      this.worldH = this.coopWorld.h;
+      this.scale = Math.min(w / this.worldW, h / this.worldH);
+      this.ox = (w - this.worldW * this.scale) / 2;
+      this.oy = (h - this.worldH * this.scale) / 2;
+    } else {
+      this.worldH = 1280;
+      this.worldW = 1280 * (w / h);
+      this.scale = h / this.worldH;
+      this.ox = 0;
+      this.oy = 0;
+    }
+    this.stars = Array.from({ length: 80 }, () => ({
+      x: Math.random() * this.worldW,
+      y: Math.random() * this.worldH,
+      s: Math.random() * 1.6 + 0.3,
+      a: Math.random() * 0.5 + 0.15,
+    }));
+  }
+
+  toVirtual(clientX, clientY) {
+    const r = this.canvas.getBoundingClientRect();
+    const x = (clientX - r.left - this.ox) / this.scale;
+    const y = (clientY - r.top - this.oy) / this.scale;
+    return { x, y };
+  }
+
+  bindInput() {
+    const down = (e) => {
+      const p = e.touches ? e.touches[0] : e;
+      const v = this.toVirtual(p.clientX, p.clientY);
+      this.pointer.down = true;
+      this.pointer.x = v.x;
+      this.pointer.y = v.y;
+    };
+    const move = (e) => {
+      const p = e.touches ? e.touches[0] : e;
+      const v = this.toVirtual(p.clientX, p.clientY);
+      this.pointer.x = v.x;
+      this.pointer.y = v.y;
+    };
+    const up = () => {
+      this.pointer.down = false;
+    };
+    this.canvas.addEventListener("pointerdown", down);
+    this.canvas.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    this.canvas.addEventListener("touchstart", (e) => { e.preventDefault(); down(e); }, { passive: false });
+    this.canvas.addEventListener("touchmove", (e) => { e.preventDefault(); move(e); }, { passive: false });
+    this.canvas.addEventListener("touchend", up);
+  }
+
+  initBuild(run) {
+    const profile = this.profile || {};
+    const hangar = profile.hangar || {};
+    const gear = startingLoadout(profile);
+    run.xp = 0;
+    run.nextXp = 18;
+    run.comboNeed = RESONANCE_NEED;
+    run.comboType = null;
+    run.combo = 0;
+    run.comboFlash = 0;
+    run.bossIntro = 0;
+    run.bossPulse = 0;
+    run.overdrive = {
+      charge: 0,
+      max: OVERDRIVE.max,
+      dur: OVERDRIVE.dur,
+      left: 0,
+      mul: OVERDRIVE.mul,
+      chargeGain: 0,
+      chargeRate: 1,
+    };
+    run.offer = { level: 1, xp: 0, next: gunXpToNext(1) };
+    run.pips = {};
+    run.might = 1;
+    run.xpMul = 1;
+    run.luck = 0;
+    run.leech = 0;
+    run.legendLuck = 0;
+    run.lives = 0;
+    run.nextOffers = 0;
+    run.offerChain = 0;
+    run.offerBurst = 0;
+    run.weapons = gear.weapons;
+    run.wepStats = gear.wepStats;
+    run.offerCount = gear.cards;
+    run.drones = [];
+    run.drone = { ...DRONE_START, level: 1, xp: 0, next: gunXpToNext(1), branch: null };
+    run.orbAngle = 0;
+    run.gun = {
+      angle: -Math.PI / 2,
+      dmg: GUN_START.dmg,
+      rate: GUN_START.rate,
+      pellets: GUN_START.pellets,
+      pierce: GUN_START.pierce,
+      bounces: GUN_START.bounces,
+      life: GUN_START.life,
+      speed: GUN_START.speed,
+      gap: GUN_START.gap,
+      spread: 0,
+      edgeMul: 1,
+      swarm: false,
+      swarmBoth: false,
+      returnHome: false,
+      falloff: 0,
+      series: 0,
+      chainLeft: 0,
+      every: 0,
+      shot: 0,
+      level: 1,
+      xp: 0,
+      next: gunXpToNext(1),
+      branch: null,
+      autoTurn: GUN_START.autoTurn,
+      cd: 0,
+    };
+    run.crit = { chance: CRIT_START.chance + (profile.critBonus || 0) / 100, mul: CRIT_START.mul };
+    run.tower = { x: this.worldW / 2, y: this.worldH / 2, r: 34, hp: TOWER_BASE_HP, maxHp: TOWER_BASE_HP, regen: 4, slide: 280, hitCd: 0 };
+    run.usedCard = false;
+    run.dmgByWeapon = {};
+    run.syn = {};
+    applyBonuses(run, sumBonuses(profile.parts || [], profile.loadout || []));
+    applyHangar(run, hangar);
+    this.refreshSynergies();
+  }
+
+  async startRun(level = 1) {
+    const startAbs = Math.min(MAX_LEVEL, Math.max(1, Number(level) || 1));
+    const chapterNum = Math.floor((startAbs - 1) / LEVELS) + 1;
+    const sub = ((startAbs - 1) % LEVELS) + 1;
+    this.run = {
+      runId: newId(),
+      startedLevel: startAbs,
+      level: sub,
+      chapter: startAbs,
+      chapterNum,
+      wave: 1,
+      kills: { circle: 0, triangle: 0, square: 0, hex: 0, diamond: 0, dash: 0, heal: 0, split: 0, boss: 0, mite: 0, blade: 0, mote: 0, shard: 0, wisp: 0 },
+      wavesCleared: 0,
+      levelsCleared: 0,
+      coins: 0,
+      endless: false,
+      power: 1,
+      levelCoins: 0,
+      won: false,
+      enemies: [],
+      bullets: [],
+      fx: [],
+      beams: [],
+      pools: [],
+      bossShots: [],
+      spawnQueue: [],
+      spawnTimer: 0,
+      wavePause: 1.2,
+    };
+    this.initBuild(this.run);
+    this.state = "play";
+    this.paused = false;
+    this.ui.showPlay();
+    this.syncDrones();
+    this.queueWave();
+    this.ui.updateHud(this.run);
+    if (this.headless || this.coop) {
+      if (this.queuedCard) applyQueuedCard(this.run, this.queuedCard);
+      this.refreshSynergies();
+      return;
+    }
+    this.reportRunStart();
+    this.pullQueuedCard();
+  }
+
+  reportRunStart() {
+    if (this.headless || this.remote || !api || !api.token()) return;
+    this.run._startedAt = performance.now();
+    const profile = this.profile || {};
+    const loadout = new Set((profile.loadout || []).filter(Boolean));
+    const parts = (profile.parts || [])
+      .filter((p) => loadout.has(p.id))
+      .map((p) => ({ base: p.base, family: p.family, rarity: p.rarity }));
+    api
+      .runStart({
+        runId: this.run.runId,
+        level: this.run.startedLevel || 1,
+        weapons: profile.weapons || [],
+        parts,
+      })
+      .catch(() => {});
+  }
+
+  reportRunEnd(outcome) {
+    if (this.headless || this.remote || !api || !api.token() || !this.run) return;
+    const run = this.run;
+    if (run._endReported) return;
+    run._endReported = true;
+    const branches = {};
+    if (run.gun?.branch) branches.gun = run.gun.branch;
+    if (run.drone?.branch) branches.drone = run.drone.branch;
+    for (const [id, stats] of Object.entries(run.wepStats || {})) {
+      if (stats?.branch) branches[id] = stats.branch;
+    }
+    const kills = Object.values(run.kills || {}).reduce((a, b) => a + b, 0);
+    const damage = damageShares(run.dmgByWeapon || {});
+    api
+      .runEnd({
+        runId: run.runId,
+        outcome,
+        level: ((run.chapterNum || 1) - 1) * LEVELS + run.level,
+        wave: run.wave,
+        duration: Math.round((performance.now() - (run._startedAt || performance.now())) / 1000),
+        kills,
+        cards: run.takenCards || [],
+        branches,
+        legendaries: run.takenLegendaries || [],
+        damage,
+      })
+      .catch(() => {});
+  }
+
+  async pullQueuedCard() {
+    if (!api?.takeCard || !this.run) return;
+    const runId = this.run.runId;
+    try {
+      const taken = await api.takeCard(runId);
+      if (taken?.profile) this.ui.applyProfile?.(taken.profile);
+      if (!this.run || this.run.runId !== runId || !taken?.card) return;
+      if (applyQueuedCard(this.run, taken.card)) {
+        this.ui.toast(taken.card);
+        this.ui.updateHud(this.run);
+      }
+    } catch {
+      // The run still starts if the chest card cannot be fetched.
+    }
+  }
+
+  queueWave() {
+    const { wave, chapter } = this.run;
+    this.run.spawnQueue = [];
+    this.run.wavePause = 0;
+    if (!this.run.endless && isBossWave(wave)) {
+      this.run.bossIntro = 2.6;
+      this.run.bossPulse = 0;
+      this.shake = 12;
+      this.audio.overdrive();
+      this.ui.updateHud(this.run);
+      return;
+    }
+    const hordeRule = this.run.endless ? this.run.hordeRule : null;
+    if (this.run.endless) {
+      const step = hordeStep(wave);
+      const kind = endlessEnemyWave(wave);
+      for (let i = 0; i < ENDLESS_PACK; i++) {
+        const enemy = enemyForWave(kind, chapter, 1, this.rand, hordeRule);
+        enemy.hp *= hordePackHpMul(step);
+        this.run.spawnQueue.push(enemy);
+      }
+      this.run.spawnTimer = 0.45;
+      this.run.waveTimer = ENDLESS_WAVE_SEC;
+      this.releaseBoss(true);
+      this.ui.updateHud(this.run);
+      return;
+    }
+    const power = this.run.power || 1;
+    const kind = campaignWave(wave);
+    const n = Math.min(waveCount(wave), waveCount(5));
+    for (let i = 0; i < n; i++) this.run.spawnQueue.push(enemyForWave(kind, chapter, power, this.rand, hordeRule));
+    this.run.spawnTimer = 0.45;
+    this.ui.updateHud(this.run);
+  }
+
+  releaseBoss(keepQueue = false) {
+    const { wave, chapter } = this.run;
+    const power = this.run.power || 1;
+    const boss = this.spawnEnemy(bossForWave(wave, chapter, power, !!this.run.endless));
+    const escorts = this.run.endless && this.run.hordeRule === "minion" ? 3 : 2;
+    this.summonRing(boss, escorts, false, 0.55);
+    if (!keepQueue) this.run.spawnQueue = [];
+    this.run.spawnTimer = 0.2;
+    this.shake = 18;
+    this.audio.boom();
+    this.run.fx.push({ kind: "ring", x: boss.x, y: boss.y, r: 20, max: boss.r * 3.4, life: 0.7, color: boss.color });
+    this.run.fx.push({ kind: "ring", x: boss.x, y: boss.y, r: 10, max: 220, life: 0.45, color: "#ffe08a" });
+    this.ui.toast(boss.name || bossKind(wave).name);
+  }
+
+  updateBoss(e, dt) {
+    if (e.summonCd === undefined) {
+      e.summonCd = 9;
+      e.shotCd = 3.2;
+    }
+    const ratio = e.maxHp > 0 ? e.hp / e.maxHp : 1;
+    if (!e.grown && ratio <= 0.5) {
+      e.grown = true;
+      e.r *= 1.35;
+      this.summonRing(e, 3, true);
+      this.shake = Math.max(this.shake, 14);
+      this.run.fx.push({ kind: "ring", x: e.x, y: e.y, r: 18, max: e.r * 3.2, life: 0.55, color: e.color });
+      this.audio.overdrive();
+      this.ui.toast("БОСС РАСТЁТ");
+    }
+    if (!e.mended && ratio <= 0.1) {
+      e.mended = true;
+      e.hp = e.maxHp * 0.3;
+      this.run.fx.push({ kind: "ring", x: e.x, y: e.y, r: 16, max: e.r * 2.8, life: 0.5, color: "#ffe08a" });
+      this.audio.overdrive();
+      this.ui.toast("БОСС ВОССТАЛ");
+    }
+    e.summonCd -= dt;
+    if (e.summonCd <= 0) {
+      e.summonCd = 9;
+      this.summonRing(e, 2, !!e.grown);
+    }
+    const home = this.run.seats ? nearestSeat(this.run.seats, e) : this.run.tower;
+    if (e.bossId === "reaper" && !e.reaperDashed) {
+      if (e.reaperWind > 0) {
+        e.reaperWind -= dt;
+        if (e.reaperWind <= 0) {
+          const aim = angTo(e, home);
+          e.reaperDash = 0.32;
+          e.reaperDashed = true;
+          e.reaperAx = Math.cos(aim);
+          e.reaperAy = Math.sin(aim);
+        }
+      } else if (dist(e, home) < 440) {
+        e.reaperWind = 0.7;
+      }
+    }
+    if (e.reaperDash > 0) e.reaperDash -= dt;
+    if (e.bossId === "crystal") {
+      if (e.shotCd <= 0.55 && e.beamAim == null) e.beamAim = angTo(e, home);
+      e.shotCd -= dt;
+      if (e.shotCd <= 0) {
+        e.shotCd = 6.2;
+        this.fireBossShot(e, e.beamAim);
+        e.beamAim = null;
+      }
+      return;
+    }
+    e.shotCd -= dt;
+    if (e.shotCd <= 0) {
+      e.shotCd = e.bossId === "satellite" ? 4.2 : 6.5;
+      this.fireBossShot(e);
+    }
+  }
+
+  crownGuarded(boss) {
+    return this.run.enemies.some((other) => !other.dead && other.bossOwner === boss.id && other.type === "wisp");
+  }
+
+  summonRing(boss, count, strong, pace = 1) {
+    const wave = this.run.wave || 1;
+    const chapter = this.run.chapter || 1;
+    const def = minionForBoss(boss.bossId, strong, wave, chapter, 1, !!this.run.endless);
+    for (let i = 0; i < count; i++) {
+      const a = (Math.PI * 2 * i) / count + this.rand() * 0.4;
+      const gap = (boss.r || 60) + (def.r || 12) + 26;
+      const e = this.spawnEnemy(def);
+      e.x = boss.x + Math.cos(a) * gap;
+      e.y = boss.y + Math.sin(a) * gap;
+      e.speed *= pace;
+      e.bossOwner = boss.id;
+    }
+  }
+
+  fireBossShot(e, lockedAngle = null) {
+    const home = this.run.seats ? nearestSeat(this.run.seats, e) : this.run.tower;
+    const a = lockedAngle == null ? angTo(e, home) : lockedAngle;
+    const beam = e.bossId === "crystal";
+    const speed = beam ? 720 : 165;
+    if (!this.run.bossShots) this.run.bossShots = [];
+    this.run.bossShots.push({
+      x: e.x + Math.cos(a) * (e.r + 8),
+      y: e.y + Math.sin(a) * (e.r + 8),
+      vx: Math.cos(a) * speed,
+      vy: Math.sin(a) * speed,
+      dmg: e.dmg * 0.42,
+      r: beam ? 16 : 10,
+      life: beam ? 0.85 : 4.5,
+      color: e.color,
+      style: e.shot || "orb",
+    });
+  }
+
+  updateBossShots(dt) {
+    const r = this.run;
+    const shots = r.bossShots || [];
+    const tw = r.tower;
+    for (const s of shots) {
+      s.x += s.vx * dt;
+      s.y += s.vy * dt;
+      s.life -= dt;
+      if (s.life <= 0 || tw.hp <= 0) continue;
+      const home = r.seats ? nearestSeat(r.seats, s) : tw;
+      if (dist(s, home) >= s.r + (home.r || tw.r) || (home.hitCd || 0) > 0 || tw.hitCd > 0) continue;
+      tw.hp -= s.dmg;
+      tw.hitCd = 0.35;
+      home.hitCd = 0.35;
+      s.life = 0;
+      this.shake = Math.max(this.shake, 4);
+      this.burst(home.x, home.y, s.color, 8);
+      this.ui.updateHud(r);
+      if (tw.hp <= 0) {
+        if (this.revive()) continue;
+        tw.hp = 0;
+        this.end(false, "died");
+        return true;
+      }
+    }
+    r.bossShots = shots.filter((s) => s.life > 0 && s.x > -80 && s.x < this.worldW + 80 && s.y > -80 && s.y < this.worldH + 80);
+    return false;
+  }
+
+  spawnGap() {
+    const wave = this.run.wave;
+    if (!this.run.endless && isBossWave(wave)) return 0.95;
+    return clamp(1.35 - wave * 0.08, 0.72, 1.45);
+  }
+
+  spawnEnemy(def, fromSplit, at) {
+    const side = Math.floor(this.rand() * 4);
+    let x;
+    let y;
+    if (fromSplit && at) {
+      x = at.x + (this.rand() - 0.5) * 30;
+      y = at.y + (this.rand() - 0.5) * 30;
+    } else if (def.boss) {
+      // На телефоне боковой край слишком близко к ядру. Босс входит с дальнего.
+      const fromLongSide = this.worldH >= this.worldW;
+      if (fromLongSide) {
+        x = 40 + this.rand() * (this.worldW - 80);
+        y = this.rand() < 0.5 ? -36 : this.worldH + 36;
+      } else {
+        x = this.rand() < 0.5 ? -36 : this.worldW + 36;
+        y = 40 + this.rand() * (this.worldH - 80);
+      }
+    } else if (side === 0) {
+      x = 40 + this.rand() * (this.worldW - 80);
+      y = -36;
+    } else if (side === 1) {
+      x = 40 + this.rand() * (this.worldW - 80);
+      y = this.worldH + 36;
+    } else if (side === 2) {
+      x = -36;
+      y = 40 + this.rand() * (this.worldH - 80);
+    } else {
+      x = this.worldW + 36;
+      y = 40 + this.rand() * (this.worldH - 80);
+    }
+    if (def.boss) {
+      this.shake = Math.max(this.shake, 14);
+      this.run.fx.push({ kind: "ring", x, y, r: 16, max: def.r * 3.2, life: 0.55, color: def.color });
+    }
+    const enemy = {
+      ...def,
+      x,
+      y,
+      hp: def.hp,
+      maxHp: def.hp,
+      shield: def.shield || 0,
+      maxShield: def.shield || 0,
+      slow: 0,
+      phase: this.rand() * Math.PI * 2,
+      dead: false,
+      fromSplit: !!fromSplit,
+      id: (this._eid = (this._eid || 0) + 1),
+    };
+    this.run.enemies.push(enemy);
+    return enemy;
+  }
+
+  nearest(from, pr
