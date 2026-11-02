@@ -1,0 +1,636 @@
+import { addCrit } from "./gun.js";
+import { addDrones, hasten } from "./drone.js";
+import { EMP_SLOW_FLOOR } from "./emp.js";
+import { addLeech } from "./general.js";
+import { addBombs, addPool, addReach, scaleGrenade } from "./grenade.js";
+import { addBounces, addRays, addWidth } from "./laser.js";
+import { hastenGuard, hastenLunge } from "./orb.js";
+import { addShards } from "./scatter.js";
+import { POLISH_MAX } from "./salvage.js";
+
+export const RARITY_STEP = {
+  common: 1,
+  rare: 2,
+  epic: 3,
+  legendary: 4,
+};
+
+export const PART_RARITY_CUTS = { common: 0.55, rare: 0.85, epic: 0.95 };
+export const PART_UNIVERSAL_CHANCE = 0.4;
+
+const RARITY_ORDER = ["common", "rare", "epic", "legendary"];
+
+function pack(specs) {
+  const tiers = {};
+  RARITY_ORDER.forEach((rarity, index) => {
+    tiers[rarity] = specs[index];
+  });
+  return tiers;
+}
+
+function line(id, name, text) {
+  return { id, name, text };
+}
+
+function dmgPart(id, name, key, label) {
+  const pcts = [8, 15, 25, 40];
+  return {
+    id,
+    name,
+    tiers: pack(
+      pcts.map((pct) => ({
+        lines: [line("dmg", label, `+${pct}%`)],
+        bonus: { [key]: pct / 100 },
+      })),
+    ),
+  };
+}
+
+function branchPart(id, name, when, specs) {
+  return { id, name, when, tiers: pack(specs) };
+}
+
+const GUN_PARTS = [
+  dmgPart("rifling", "Нарезка", "gunDmg", "урон пулемёта"),
+  branchPart("striker", "Ударник", "Очередь", [2, 4, 7, 12].map((pct) => ({
+    lines: [line("crit", "крит Очереди", `+${pct}%`)],
+    bonus: { branches: { gun: { queue: { crit: pct / 100 } } } },
+  }))),
+  branchPart("comb", "Гребёнка", "Залп", [1, 1, 2, 3].map((n) => ({
+    lines: [line("pellets", "пули Залпа", `+${n}`)],
+    bonus: { branches: { gun: { volley: { pellets: n } } } },
+  }))),
+  branchPart("bumper", "Отбойник", "Рикошет", [1, 1, 1, 2].map((n) => ({
+    lines: [line("bounces", "отскоки Рикошета", `+${n}`)],
+    bonus: { branches: { gun: { ricochet: { bounces: n } } } },
+  }))),
+];
+
+const DRONE_PARTS = [
+  dmgPart("hanger", "Подвес", "droneDmg", "урон дрона"),
+  branchPart("wing", "Крыло", "Стая", [
+    { count: 0, haste: 0.92, rate: 8 },
+    { count: 1, haste: 0.92, rate: 8 },
+    { count: 1, haste: 0.88, rate: 12 },
+    { count: 2, haste: 0.88, rate: 12 },
+  ].map((row) => ({
+    lines: [
+      ...(row.count ? [line("count", "дроны Стаи", `+${row.count}`)] : []),
+      line("rate", "темп Стаи", `быстрее на ${row.rate}%`),
+    ],
+    bonus: { branches: { drone: { flock: { count: row.count, haste: row.haste } } } },
+  }))),
+  branchPart("bay", "Бомболюк", "Бомбы", [
+    { radius: 8, mul: 0.1 },
+    { radius: 18, mul: 0.2 },
+    { radius: 32, mul: 0.35 },
+    { radius: 50, mul: 0.5 },
+  ].map((row) => ({
+    lines: [
+      line("radius", "радиус взрыва", `+${row.radius}`),
+      line("bombs", "урон бомб", `+${num(row.mul)}`),
+    ],
+    bonus: { branches: { drone: { bomb: { radius: row.radius, bombMul: row.mul } } } },
+  }))),
+  {
+    ...branchPart("tracer", "Трассер", "Охота", [1, 2, 3, 4].map((n) => ({
+      lines: [line("pierce", "пробивание", `+${n}`)],
+      bonus: { dronePierce: n },
+    }))),
+    note: "пробивание работает сразу",
+  },
+];
+
+const LASER_PARTS = [
+  dmgPart("collimator", "Коллиматор", "laserDmg", "урон лазера"),
+  branchPart("burner", "Горелка", "Резак", [0.08, 0.16, 0.28, 0.45].map((n) => ({
+    lines: [line("burn", "горение Резака", `+${num(n)}`)],
+    bonus: { branches: { laser: { cut: { burn: n } } } },
+  }))),
+  branchPart("splitter", "Рассекатель", "Призма", [
+    { rays: 0, width: 2 },
+    { rays: 1, width: 0 },
+    { rays: 1, width: 0 },
+    { rays: 2, width: 0 },
+  ].map((row) => ({
+    lines: [
+      row.rays
+        ? line("rays", "лучи Призмы", `+${row.rays}`)
+        : line("width", "толщина Призмы", `+${row.width}`),
+    ],
+    bonus: { branches: { laser: { prism: { rays: row.rays, width: row.width } } } },
+  }))),
+  branchPart("reflector", "Отражатель", "Зеркало", [1, 1, 1, 2].map((n) => ({
+    lines: [line("bounces", "отскоки Зеркала", `+${n}`)],
+    bonus: { branches: { laser: { mirror: { bounces: n } } } },
+  }))),
+];
+
+const SCATTER_PARTS = [
+  dmgPart("charge", "Заряд", "scatterDmg", "урон дроби"),
+  {
+    id: "brace",
+    name: "Упор",
+    when: "Вал",
+    note: "отброс работает сразу",
+    tiers: pack([8, 16, 28, 45].map((n) => ({
+      lines: [line("knock", "отброс", `+${n}`)],
+      bonus: { scatterKnock: n },
+    }))),
+  },
+  branchPart("pin", "Боёк", "Сноп", [4, 8, 12, 18].map((pct) => ({
+    lines: [line("center", "удар центра", `+${pct}%`)],
+    bonus: { branches: { scatter: { sheaf: { centerMul: 1 + pct / 100 } } } },
+  }))),
+  branchPart("crumb", "Крошка", "Гроздь", [
+    { n: 1, mul: 0.05 },
+    { n: 1, mul: 0.1 },
+    { n: 2, mul: 0.18 },
+    { n: 2, mul: 0.28 },
+  ].map((row) => ({
+    lines: [
+      line("shards", "осколки Грозди", `+${row.n}`),
+      line("shardMul", "урон осколков", `+${num(row.mul)}`),
+    ],
+    bonus: { branches: { scatter: { bunch: { shards: row.n, shardMul: row.mul } } } },
+  }))),
+];
+
+const GRENADE_PARTS = [
+  dmgPart("rack", "Навеска", "grenadeDmg", "урон заряда"),
+  branchPart("chisel", "Долото", "Клин", [0.1, 0.18, 0.3, 0.45].map((n) => ({
+    lines: [line("reach", "длина Клина", `+${num(n)}`)],
+    bonus: { branches: { grenade: { wedge: { reach: n } } } },
+  }))),
+  branchPart("magazine", "Обойма", "Кассета", [1, 1, 1, 2].map((n) => ({
+    lines: [line("bombs", "бомбы Кассеты", `+${n}`)],
+    bonus: { branches: { grenade: { cassette: { bombs: n } } } },
+  }))),
+  branchPart("ember", "Тлеющий заряд", "Кратер", [0.25, 0.5, 0.85, 1.3].map((n) => ({
+    lines: [line("pool", "лужа Кратера", `+${num(n)} с`)],
+    bonus: { branches: { grenade: { crater: { pool: n } } } },
+  }))),
+];
+
+const EMP_PARTS = [
+  dmgPart("sparker", "Разрядник", "empDmg", "урон EMP"),
+  {
+    id: "cold",
+    name: "Холод",
+    when: "Ступор",
+    note: "работает сразу",
+    tiers: pack([
+      { dur: 0.2, slow: 0.94, pct: 6 },
+      { dur: 0.4, slow: 0.88, pct: 12 },
+      { dur: 0.7, slow: 0.8, pct: 20 },
+      { dur: 1.1, slow: 0.7, pct: 30 },
+    ].map((row) => ({
+      lines: [
+        line("dur", "замедление", `+${num(row.dur)} с`),
+        line("slow", "хвата", `ещё на ${row.pct}%`),
+      ],
+      bonus: { empSlowDur: row.dur, empSlowMul: row.slow },
+    }))),
+  },
+  branchPart("jumper", "Перемычка", "Разряд", [1, 2, 3, 4].map((n) => ({
+    lines: [line("jumps", "молния Разряда", `+${n}`)],
+    bonus: { branches: { emp: { storm: { jumps: n } } } },
+  }))),
+  {
+    ...branchPart("board", "Борт", "Купол", [
+    { radius: 12, knock: 15 },
+    { radius: 24, knock: 30 },
+    { radius: 40, knock: 50 },
+    { radius: 64, knock: 80 },
+  ].map((row) => ({
+    lines: [
+      line("radius", "радиус", `+${row.radius}`),
+      line("knock", "отброс Купола", `+${row.knock}`),
+    ],
+    bonus: {
+      empRadius: row.radius,
+      branches: { emp: { dome: { knock: row.knock } } },
+    },
+  }))),
+    note: "радиус работает сразу, отброс включается с Куполом",
+  },
+];
+
+const ORB_PARTS = [
+  dmgPart("bezel", "Оправа", "orbDmg", "урон орбиты"),
+  branchPart("tooth", "Зазубрина", "Серп", [0.2, 0.4, 0.65, 1].map((n) => ({
+    lines: [line("reach", "размах Серпа", `+${num(n)}`)],
+    bonus: { branches: { orb: { blade: { reach: n } } } },
+  }))),
+  branchPart("wardplate", "Щиток", "Барьер", [
+    { haste: 0.92, pct: 8, knock: 8 },
+    { haste: 0.85, pct: 15, knock: 16 },
+    { haste: 0.75, pct: 25, knock: 28 },
+    { haste: 0.6, pct: 40, knock: 48 },
+  ].map((row) => ({
+    lines: [
+      line("guard", "заряд Барьера", `быстрее на ${row.pct}%`),
+      line("knock", "отброс Барьера", `+${row.knock}`),
+    ],
+    bonus: { branches: { orb: { ward: { guardHaste: row.haste, knock: row.knock } } } },
+  }))),
+  branchPart("tip", "Наконечник", "Выпад", [
+    { mul: 0.25, haste: 0.94, pct: 6 },
+    { mul: 0.5, haste: 0.88, pct: 12 },
+    { mul: 0.9, haste: 0.8, pct: 20 },
+    { mul: 1.4, haste: 0.7, pct: 30 },
+  ].map((row) => ({
+    lines: [
+      line("lunge", "удар Выпада", `+${num(row.mul)}`),
+      line("rush", "темп Выпада", `быстрее на ${row.pct}%`),
+    ],
+    bonus: { branches: { orb: { lunge: { lungeMul: row.mul, lungeHaste: row.haste } } } },
+  }))),
+];
+
+const COMMON_PARTS = [
+  {
+    id: "frame",
+    name: "Каркас",
+    tiers: pack([40, 80, 140, 220].map((n) => ({
+      lines: [line("hp", "здоровье ядра", `+${n}`)],
+      bonus: { hp: n },
+    }))),
+  },
+  {
+    id: "pump",
+    name: "Насос",
+    tiers: pack([0.5, 1, 1.8, 2.8].map((n) => ({
+      lines: [line("regen", "регенерация", `+${num(n)}`)],
+      bonus: { regen: n },
+    }))),
+  },
+  {
+    id: "vein",
+    name: "Жила",
+    tiers: pack([1, 1, 2, 3].map((n) => ({
+      lines: [line("leech", "лечение за убийство", `+${n}`)],
+      bonus: { leech: n },
+    }))),
+  },
+  {
+    id: "tuning",
+    name: "Камертон",
+    tiers: pack([1, 1, 2, 2].map((n) => ({
+      lines: [line("reson", "резонанс", `на ${n} раньше`)],
+      bonus: { comboNeed: n },
+    }))),
+  },
+];
+
+export const PARTS = {
+  gun: GUN_PARTS,
+  drone: DRONE_PARTS,
+  laser: LASER_PARTS,
+  scatter: SCATTER_PARTS,
+  grenade: GRENADE_PARTS,
+  emp: EMP_PARTS,
+  orb: ORB_PARTS,
+  common: COMMON_PARTS,
+};
+
+export const BASES = Object.fromEntries(
+  Object.entries(PARTS).map(([family, list]) => [family, list.map((part) => ({ id: part.id, name: part.name }))]),
+);
+
+function num(n) {
+  return formatAffixNumber(n).replace(".", ",");
+}
+
+export function formatAffixNumber(value) {
+  const rounded = Math.round(value * 100) / 100;
+  let text = rounded.toFixed(2);
+  text = text.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+  return text;
+}
+
+function findDef(family, base) {
+  const list = PARTS[family || "common"] || [];
+  return list.find((part) => part.id === base) || null;
+}
+
+export function partAffixes(family, base, rarity) {
+  const tier = findDef(family, base)?.tiers?.[rarity];
+  if (!tier) return null;
+  const step = RARITY_STEP[rarity] || 1;
+  return tier.lines.map((item) => ({ id: item.id, name: item.name, text: item.text, step }));
+}
+
+export function partFamilyLabel(family) {
+  return {
+    gun: "Пулемёт",
+    drone: "Дрон",
+    laser: "Лазер",
+    scatter: "Дробь",
+    grenade: "Граната",
+    emp: "EMP",
+    orb: "Орбита",
+  }[family] || "Общая";
+}
+
+export function partNote(family, base) {
+  return findDef(family, base)?.note || "";
+}
+
+export function describeAffix(_family, affix) {
+  if (!affix) return "";
+  if (affix.text) return `${affix.name}: ${affix.text}`;
+  return affix.name || String(affix.id || "");
+}
+
+export function polishLevel(value) {
+  const n = Math.floor(Number(value) || 0);
+  if (n <= 0) return 0;
+  return Math.min(POLISH_MAX, n);
+}
+
+export function scalePolishedNumber(value, level) {
+  const lv = polishLevel(level);
+  if (!lv || !Number.isFinite(value) || value === 0) return value;
+  const scaled = value * (1 + 0.08 * lv);
+  if (Number.isInteger(value)) {
+    const rounded = Math.round(scaled);
+    if (rounded === value) return value + Math.sign(value);
+    return rounded;
+  }
+  const rounded = Math.round(scaled * 100) / 100;
+  if (rounded === value) {
+    const step = value > 0 ? 0.01 : -0.01;
+    return Math.round((value + step) * 100) / 100;
+  }
+  return rounded;
+}
+
+const STRENGTH_KEYS = new Set(["haste", "guardHaste", "lungeHaste", "empSlowMul"]);
+
+export function scaleBonusValue(key, value, level) {
+  const lv = polishLevel(level);
+  if (!lv || typeof value !== "number") return value;
+  if (STRENGTH_KEYS.has(key) && value > 0 && value < 1) {
+    const pct = Math.round((1 - value) * 100);
+    const next = scalePolishedNumber(pct, lv);
+    return Math.round((1 - next / 100) * 1000) / 1000;
+  }
+  if (key === "centerMul" && value >= 1) {
+    const pct = Math.round((value - 1) * 100);
+    const next = scalePolishedNumber(pct, lv);
+    return 1 + next / 100;
+  }
+  return scalePolishedNumber(value, lv);
+}
+
+function scaleBonusTree(bonus, level) {
+  if (!bonus || typeof bonus !== "object") return bonus;
+  const out = Array.isArray(bonus) ? [] : {};
+  for (const [key, value] of Object.entries(bonus)) {
+    if (value && typeof value === "object") out[key] = scaleBonusTree(value, level);
+    else out[key] = scaleBonusValue(key, value, level);
+  }
+  return out;
+}
+
+export function polishedText(text, level) {
+  if (!polishLevel(level) || !text) return text || "";
+  return String(text).replace(/\d+(?:[.,]\d+)?/g, (raw) => {
+    const n = Number(raw.replace(",", "."));
+    if (!Number.isFinite(n)) return raw;
+    return formatAffixNumber(scalePolishedNumber(n, level)).replace(".", ",");
+  });
+}
+
+function rollRarity(rng) {
+  const r = rng();
+  if (r < PART_RARITY_CUTS.common) return "common";
+  if (r < PART_RARITY_CUTS.rare) return "rare";
+  if (r < PART_RARITY_CUTS.epic) return "epic";
+  return "legendary";
+}
+
+function weaponFamilies(ownedWeapons) {
+  const set = new Set(["gun", "drone"]);
+  for (const w of ownedWeapons || []) {
+    if (w && w !== "gun" && w !== "drone") set.add(w);
+  }
+  return [...set];
+}
+
+function pickIndex(rng, n) {
+  if (n <= 0) return 0;
+  return Math.floor(rng() * n);
+}
+
+export function rollPart(rng, ownedWeapons, options = {}) {
+  let family = null;
+  let list = PARTS.common;
+  const forced = options.family;
+
+  if (forced === "common") {
+    family = null;
+    list = PARTS.common;
+  } else if (forced && PARTS[forced]) {
+    family = forced;
+    list = PARTS[forced];
+  } else if (rng() >= PART_UNIVERSAL_CHANCE) {
+    const families = weaponFamilies(ownedWeapons);
+    family = families[pickIndex(rng, families.length)];
+    list = PARTS[family];
+  }
+
+  const def = list[pickIndex(rng, list.length)];
+  const rarity = RARITY_STEP[options.rarity] ? options.rarity : rollRarity(rng);
+  const part = {
+    base: def.id,
+    baseName: def.name,
+    family,
+    rarity,
+    affixes: partAffixes(family, def.id, rarity),
+  };
+  if (options.id) part.id = options.id;
+  return part;
+}
+
+function partById(parts, partId) {
+  return parts.find((p) => p.id === partId);
+}
+
+function equippedBases(slots, parts) {
+  const bases = new Set();
+  for (const id of slots) {
+    if (!id) continue;
+    const p = partById(parts, id);
+    if (p) bases.add(p.base);
+  }
+  return bases;
+}
+
+function slotFamily(slots, parts, index) {
+  const id = slots[index];
+  if (!id) return null;
+  const p = partById(parts, id);
+  return p?.family ?? null;
+}
+
+function firstCommonSlot(slots) {
+  for (let i = 4; i < 8; i++) if (!slots[i]) return i;
+  return -1;
+}
+
+export function firstSlot(parts, slots, partId) {
+  const part = partById(parts, partId);
+  if (!part) return { error: "Нет свободного слота" };
+  if (equippedBases(slots, parts).has(part.base)) {
+    return { error: "Такая уже надета" };
+  }
+
+  if (part.family === null) {
+    const idx = firstCommonSlot(slots);
+    if (idx < 0) return { error: "Нет свободного слота" };
+    const next = [...slots];
+    next[idx] = partId;
+    return { slots: next };
+  }
+
+  for (let i = 0; i < 4; i++) {
+    if (slots[i]) continue;
+    const next = [...slots];
+    next[i] = partId;
+    return { slots: next };
+  }
+  const c = firstCommonSlot(slots);
+  if (c < 0) return { error: "Нет свободного слота" };
+  const next = [...slots];
+  next[c] = partId;
+  return { slots: next };
+}
+
+export function equipAt(parts, slots, partId, index) {
+  const part = partById(parts, partId);
+  if (!part) return { error: "Нет свободного слота" };
+
+  if (equippedBases(slots, parts).has(part.base)) {
+    return { error: "Такая уже надета" };
+  }
+
+  if (part.family === null) {
+    if (index < 4) return { error: "Нет свободного слота" };
+  } else if (index < 4) {
+    const fam = slotFamily(slots, parts, index);
+    if (fam != null && fam !== part.family) return { error: "Нет свободного слота" };
+  }
+
+  if (index < 0 || index > 7 || slots[index]) {
+    return { error: "Нет свободного слота" };
+  }
+
+  const next = [...slots];
+  next[index] = partId;
+  return { slots: next };
+}
+
+export function unequip(slots, index) {
+  const next = [...slots];
+  if (index >= 0 && index < next.length) next[index] = null;
+  return next;
+}
+
+const FAMILY_DMG_KEY = {
+  gun: "gunDmg",
+  drone: "droneDmg",
+  laser: "laserDmg",
+  scatter: "scatterDmg",
+  grenade: "grenadeDmg",
+  emp: "empDmg",
+  orb: "orbDmg",
+};
+
+export const SET_TIERS = [2, 3, 4];
+
+const WEAPON_SET_DMG = { 2: 0.08, 3: 0.16, 4: 0.28 };
+
+const COMMON_SET = {
+  2: { hp: 40 },
+  3: { hp: 40, regen: 0.8 },
+  4: { hp: 40, regen: 0.8, allDmg: 0.06 },
+};
+
+function highestTier(count) {
+  let best = 0;
+  for (const tier of SET_TIERS) if (count >= tier) best = tier;
+  return best;
+}
+
+function familyCounts(parts, slots) {
+  const counts = {};
+  for (const id of slots || []) {
+    if (!id) continue;
+    const part = partById(parts, id);
+    if (!part) continue;
+    const key = part.family || "common";
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return counts;
+}
+
+export function setBonuses(parts, slots) {
+  const out = {};
+  const counts = familyCounts(parts, slots);
+  for (const [fam, count] of Object.entries(counts)) {
+    const tier = highestTier(count);
+    if (!tier) continue;
+    if (fam === "common") {
+      for (const [key, value] of Object.entries(COMMON_SET[tier])) out[key] = (out[key] || 0) + value;
+    } else if (FAMILY_DMG_KEY[fam]) {
+      out[FAMILY_DMG_KEY[fam]] = (out[FAMILY_DMG_KEY[fam]] || 0) + WEAPON_SET_DMG[tier];
+    }
+  }
+  return out;
+}
+
+export function setDesc(family, tier) {
+  if (!tier) return "";
+  if (!family || family === "common") {
+    const parts = [];
+    const bonus = COMMON_SET[tier];
+    if (bonus.hp) parts.push(`+${bonus.hp} HP ядра`);
+    if (bonus.regen) parts.push(`+${formatAffixNumber(bonus.regen)} реген`);
+    if (bonus.allDmg) parts.push(`+${Math.round(bonus.allDmg * 100)}% урона всего оружия`);
+    return parts.join(", ");
+  }
+  return `+${Math.round(WEAPON_SET_DMG[tier] * 100)}% урона (${partFamilyLabel(family).toLowerCase()})`;
+}
+
+export function activeSets(parts, slots) {
+  const counts = familyCounts(parts, slots);
+  const list = [];
+  for (const [fam, count] of Object.entries(counts)) {
+    const tier = highestTier(count);
+    if (!tier) continue;
+    list.push({
+      family: fam === "common" ? null : fam,
+      count,
+      tier,
+      desc: setDesc(fam, tier),
+    });
+  }
+  list.sort((a, b) => b.count - a.count);
+  return list;
+}
+
+const HASTE_KEYS = new Set(["haste", "guardHaste", "lungeHaste"]);
+
+function mergeBranch(into, branches) {
+  into.branches = into.branches || {};
+  for (const [family, byBranch] of Object.entries(branches || {})) {
+    into.branches[family] = into.branches[family] || {};
+    for (const [branch, mods] of Object.entries(byBranch)) {
+      const dst = into.branches[family][branch] || {};
+      for (const [key, value] of Object.entries(mods)) {
+        if (HASTE_KEYS.has(key)) dst[key] = (dst[key] ?? 1) * value;
+        else if (key === "centerMul") dst[key] = (dst[key] ?? 1) * value;
+        else dst[key] = (dst[key] || 0) + value;
+      
