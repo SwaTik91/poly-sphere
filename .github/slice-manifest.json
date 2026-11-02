@@ -1,18 +1,55 @@
-[
-  {
-    "path": "source-parts/art-packed/public__gatling.png.b64/part-02.txt",
-    "size": 20000,
-    "chunks": [
-      "_slicebuild/gatling-part-02/00.txt",
-      "_slicebuild/gatling-part-02/01.txt",
-      "_slicebuild/gatling-part-02/02.txt",
-      "_slicebuild/gatling-part-02/03.txt",
-      "_slicebuild/gatling-part-02/04.txt",
-      "_slicebuild/gatling-part-02/05.txt",
-      "_slicebuild/gatling-part-02/06.txt",
-      "_slicebuild/gatling-part-02/07.txt",
-      "_slicebuild/gatling-part-02/08.txt",
-      "_slicebuild/gatling-part-02/09.txt"
-    ]
-  }
-]
+{
+  "files": [
+    {
+      "path": "source-parts/art-packed/public__gatling.png.b64/part-02.txt",
+      "size": 20000,
+      "chunks": [
+        "_slicebuild/gatling-part-02/00.txt",
+        "_slicebuild/gatling-part-02/01.txt",
+        "_slicebuild/gatling-part-02/02.txt",
+        "_slicebuild/gatling-part-02/03.txt",
+        "_slicebuild/gatling-part-02/04.txt",
+        "_slicebuild/gatling-part-02/05.txt",
+        "_slicebuild/gatling-part-02/06.txt",
+        "_slicebuild/gatling-part-02/07.txt",
+        "_slicebuild/gatling-part-02/08.txt",
+        "_slicebuild/gatling-part-02/09.txt"
+      ]
+    },
+    {
+      "path": "source-parts/art-packed/public__gatling.png.b64/part-03.txt",
+      "size": 20000,
+      "sha256": "d041ed338317a27d15af65d9b86e1ee0be95325d55e781ae3a69c61e7df3276e",
+      "chunks": [
+        "_slicebuild/gatling-part-03/00.txt",
+        "_slicebuild/gatling-part-03/01.txt",
+        "_slicebuild/gatling-part-03/02.txt",
+        "_slicebuild/gatling-part-03/03.txt",
+        "_slicebuild/gatling-part-03/04.txt",
+        "_slicebuild/gatling-part-03/05.txt",
+        "_slicebuild/gatling-part-03/06.txt",
+        "_slicebuild/gatling-part-03/07.txt",
+        "_slicebuild/gatling-part-03/08.txt",
+        "_slicebuild/gatling-part-03/09.txt"
+      ]
+    }
+  ],
+  "repairs": [
+    {
+      "path": "source-parts/art-packed/public__gatling.png.b64/part-05.txt",
+      "offset": 1730,
+      "old": "7",
+      "new": "5",
+      "size": 20000,
+      "sha256": "958354b55b8d616d0aea81e36238d42c875a809bb3afe251e77691f7dea5f1da"
+    },
+    {
+      "path": "source-parts/art-packed/public__gatling.png.b64/part-11.txt",
+      "offset": 15998,
+      "old": "A",
+      "new": "I",
+      "size": 20000,
+      "sha256": "02378c3b3b9f01f29c825bb00969f3926d4d5fa89a5987c8ca4ba0f0b9dcb110"
+    }
+  ]
+}

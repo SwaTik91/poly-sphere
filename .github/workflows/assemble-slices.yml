@@ -14,10 +14,12 @@ jobs:
       - name: Concatenate slice chunks
         run: |
           python3 - << 'PY'
+          import hashlib
           import json
           from pathlib import Path
           manifest = json.loads(Path(".github/slice-manifest.json").read_text())
-          for item in manifest:
+          files = manifest["files"] if isinstance(manifest, dict) else manifest
+          for item in files:
               data = "".join(Path(p).read_text() for p in item["chunks"])
               dest = Path(item["path"])
               dest.parent.mkdir(parents=True, exist_ok=True)
@@ -25,6 +27,31 @@ jobs:
               got = dest.stat().st_size
               if got != item["size"]:
                   raise SystemExit(f"size mismatch {item['path']} {got} != {item['size']}")
+              if "sha256" in item:
+                  h = hashlib.sha256(dest.read_bytes()).hexdigest()
+                  if h != item["sha256"]:
+                      raise SystemExit(f"hash mismatch {item['path']} {h} != {item['sha256']}")
+          if isinstance(manifest, dict):
+              for item in manifest.get("repairs", []):
+                  dest = Path(item["path"])
+                  data = bytearray(dest.read_bytes())
+                  off = item["offset"]
+                  old = item["old"].encode()
+                  new = item["new"].encode()
+                  cur = bytes(data[off:off+len(old)])
+                  if cur == new:
+                      pass
+                  elif cur == old:
+                      data[off:off+len(old)] = new
+                  else:
+                      raise SystemExit(f"repair precondition {item['path']} @{off} got {cur!r}")
+                  dest.write_bytes(data)
+                  if dest.stat().st_size != item["size"]:
+                      raise SystemExit(f"size mismatch {item['path']}")
+                  if "sha256" in item:
+                      h = hashlib.sha256(dest.read_bytes()).hexdigest()
+                      if h != item["sha256"]:
+                          raise SystemExit(f"hash mismatch {item['path']} {h} != {item['sha256']}")
           PY
       - name: Commit assembled files
         run: |
