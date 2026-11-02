@@ -1,0 +1,359 @@
+ ${open ? "" : "disabled"}>${open ? "В БОЙ" : "ЗАКРЫТ"}</button></div>`,
+      );
+    }
+  }
+  $("level-list").innerHTML = blocks.join("");
+  $("level-list").querySelectorAll("button").forEach((btn) => {
+    btn.onclick = () => beginBattle(Number(btn.dataset.level));
+  });
+}
+
+function beginBattle(level = 1) {
+  if (!api.token()) return;
+  if (!levelOpen(level)) return;
+  audio.unlock();
+  game.meta = meta;
+  game.profile = profile;
+  game.remote = false;
+  Promise.resolve(game.startRun(level)).catch((error) => ui.toast(error.message || "Бой не запустился"));
+}
+
+function coopSocket(msg) {
+  const ws = new WebSocket(`ws://${location.hostname}:8090`);
+  ws.onopen = () => ws.send(JSON.stringify(msg));
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.t === "err") {
+      ui.toast(data.error || "Комната не найдена");
+      return;
+    }
+    if (data.t === "room") {
+      game.coop = { ws, seat: data.seat };
+      $("coop-code").textContent = data.code;
+      $("coop-wait").textContent = data.seat === 0 ? "Ждём друга. Пусть введёт этот код." : "Входим в уровень…";
+    }
+    if (data.t === "go") {
+      game.coop = { ...(game.coop || {}), ws, seat: data.seat };
+      game.beginCoop(data);
+    } else if (data.t === "in" || data.t === "pick" || data.t === "reroll" || data.t === "continue" || data.t === "endless" || data.t === "exit") {
+      game.onCoop(data);
+    }
+  };
+  ws.onerror = () => ui.toast("Нет связи с комнатой");
+}
+
+$("btn-coop").onclick = () => {
+  if (!api.token()) return;
+  openScreen("screen-coop");
+};
+$("btn-coop-back").onclick = () => showMenu();
+$("btn-coop-host").onclick = () => {
+  game.resize();
+  const p = profile || {};
+  coopSocket({
+    t: "host",
+    level: 1,
+    worldW: game.worldW,
+    worldH: game.worldH,
+    profile: {
+      hangar: p.hangar || {},
+      critBonus: p.critBonus || 0,
+      weapons: p.weapons || [],
+      fourthCard: !!p.fourthCard,
+    },
+  });
+};
+$("btn-coop-join").onclick = () => {
+  const code = $("coop-join-code").value.trim().toUpperCase();
+  if (code.length < 4) {
+    ui.toast("Нужен код из 4 знаков");
+    return;
+  }
+  coopSocket({ t: "join", code });
+};
+$("btn-play").onclick = () => {
+  if (!api.token()) return;
+  beginBattle(furthestOpenLevel());
+};
+$("btn-pick-level").onclick = () => {
+  if (!api.token()) return;
+  openScreen("screen-levels");
+  renderLevels();
+};
+$("btn-levels-back").onclick = () => showMenu();
+document.querySelectorAll("#tabbar .tab").forEach((btn) => {
+  btn.onclick = () => showTab(btn.dataset.tab);
+});
+$("btn-gear").onclick = () => openSettings();
+
+async function enter(mode) {
+  const name = $("login-name").value.trim();
+  const password = $("login-password").value;
+  $("login-error").textContent = "";
+  try {
+    const session = mode === "register" ? await api.register(name, password) : await api.login(name, password);
+    applyProfile(session.profile);
+    showMenu();
+  } catch (error) {
+    $("login-error").textContent = error.message || "Вход не удался";
+  }
+}
+
+$("btn-login").onclick = () => enter("login");
+$("btn-register").onclick = () => enter("register");
+$("btn-dev").onclick = () => {
+  openScreen("screen-dev");
+  $("dev-crystals").textContent = String(profile?.crystals || 0);
+};
+$("btn-dev-back").onclick = () => showTab("play");
+$("btn-dev-crystals").onclick = () => {
+  purchase(async () => {
+    const result = await api.devCrystals(100);
+    $("dev-crystals").textContent = String(result.profile?.crystals || 0);
+    ui.toast("+100 кристаллов");
+    return result;
+  });
+};
+for (const rarity of ["common", "rare", "epic", "legendary"]) {
+  $(`btn-dev-${rarity}`).onclick = () => {
+    purchase(async () => {
+      const result = await api.devPart(rarity);
+      const part = result.part;
+      if (part) ui.toast(`${part.baseName || part.base} · ${partFamilyLabel(part.family)}`);
+      return result;
+    });
+  };
+}
+$("btn-dust-exchange").onclick = async () => {
+  const result = await purchase(() => api.exchangeDust(), renderShop);
+  if (result?.dust) ui.toast(`Пыль +${result.dust}`);
+};
+$("btn-chest-open").onclick = async () => {
+  if (gachaBusy()) return;
+  $("btn-chest-open").disabled = true;
+  const pityNext = CHEST_PITY - ((profile?.chestsOpened || 0) % CHEST_PITY) === 1;
+  const result = await purchase(() => api.openChest(newId(), pityNext ? chestFamily : null));
+  if (!result?.drop) {
+    renderShop();
+    return;
+  }
+  showGacha(result.drop);
+};
+$("gacha").onclick = () => {
+  if (gachaPhase === "shake" || gachaPhase === "open") revealGacha();
+  else if (gachaPhase === "reveal") closeGacha();
+};
+function refreshSettings() {
+  const on = meta.showDamage !== false;
+  const btn = $("btn-damage-toggle");
+  btn.textContent = on ? "ПОКАЗ УРОНА: ВКЛ" : "ПОКАЗ УРОНА: ВЫКЛ";
+  btn.classList.toggle("primary", on);
+  $("btn-save-progress").hidden = !profile?.isGuest;
+}
+function openSettings() {
+  openScreen("screen-settings");
+  refreshSettings();
+}
+
+const PART_COLLECTION = ["gun", "drone", "laser", "scatter", "grenade", "emp", "orb", "common"];
+let collectionFrom = "tasks";
+
+function collectionKey(item) {
+  return `${item.kind}:${item.id}`;
+}
+
+function collectionCatalog() {
+  const seen = meta.seen || {};
+  const enemies = new Set(seen.enemies || []);
+  const branches = new Set(seen.branches || []);
+  const synergies = new Set(seen.synergies || []);
+  const partFamilies = new Set((profile?.parts || []).map((p) => p.family || "common"));
+  return [
+    ...Object.entries(SHAPES).map(([id, shape]) => ({
+      kind: "enemy", id, section: "Враги", label: shape.name, glyph: shape.glyph, unlocked: enemies.has(id),
+    })),
+    ...Object.entries(BRANCH_LABELS).map(([id, label]) => ({
+      kind: "branch", id, section: "Ветки оружия", label, glyph: "", unlocked: branches.has(id),
+    })),
+    ...SYNERGIES.map((synergy) => ({
+      kind: "synergy", id: synergy.id, section: "Синергии", label: synergy.name, glyph: "", unlocked: synergies.has(synergy.id),
+    })),
+    ...PART_COLLECTION.map((id) => ({
+      kind: "part",
+      id,
+      section: "Семейства запчастей",
+      label: partFamilyLabel(id === "common" ? null : id),
+      glyph: "",
+      unlocked: partFamilies.has(id),
+    })),
+  ];
+}
+
+function collectionSnapshot() {
+  const items = collectionCatalog();
+  const unlocked = items.filter((item) => item.unlocked).map(collectionKey);
+  if (!Array.isArray(meta.collectionViewed)) {
+    meta.collectionViewed = collectionNews(unlocked, undefined).viewed;
+    saveMeta(meta);
+  }
+  const news = collectionNews(unlocked, meta.collectionViewed);
+  return { items, fresh: new Set(news.fresh) };
+}
+
+function paintCollectionHub(snapshot = collectionSnapshot()) {
+  const open = snapshot.items.filter((item) => item.unlocked).length;
+  const labels = snapshot.items
+    .filter((item) => snapshot.fresh.has(collectionKey(item)))
+    .map((item) => item.label);
+  const line = formatFresh(labels);
+  $("collection-progress").textContent = `Открыто ${open} из ${snapshot.items.length}`;
+  const freshEl = $("collection-fresh");
+  freshEl.textContent = line ? `Новое: ${line}` : "";
+  freshEl.classList.toggle("hidden", !line);
+  const notice = $("btn-collection-notice");
+  notice.textContent = line ? `Новое в коллекции: ${line}` : "";
+  notice.classList.toggle("hidden", !line);
+}
+
+function collectionChip(item, fresh) {
+  const glyphHtml = item.glyph ? `<span class="coll-glyph">${item.glyph}</span>` : "";
+  const cls = `${item.unlocked ? "" : " locked"}${fresh ? " fresh" : ""}`;
+  return `<div class="coll-chip${cls}">${glyphHtml}<span>${item.unlocked ? item.label : "???"}</span></div>`;
+}
+
+function collectionSection(title, items, fresh) {
+  const unlocked = items.filter((item) => item.unlocked).length;
+  const chips = items.map((item) => collectionChip(item, fresh.has(collectionKey(item)))).join("");
+  return `<div class="coll-section"><h3>${title} <span class="sub">${unlocked}/${items.length}</span></h3><div class="coll-grid">${chips}</div></div>`;
+}
+
+function renderCollection(items, fresh) {
+  const sections = [];
+  for (const item of items) {
+    let section = sections.find((row) => row.title === item.section);
+    if (!section) {
+      section = { title: item.section, items: [] };
+      sections.push(section);
+    }
+    section.items.push(item);
+  }
+  $("collection-sub").textContent = fresh.size
+    ? "Новое подсвечено."
+    : "Что ты уже открыл в бою.";
+  $("collection-body").innerHTML = sections.map((section) => collectionSection(section.title, section.items, fresh)).join("");
+}
+
+function openCollection(from) {
+  collectionFrom = from || "tasks";
+  const snapshot = collectionSnapshot();
+  openScreen("screen-collection");
+  renderCollection(snapshot.items, snapshot.fresh);
+  meta.collectionViewed = snapshot.items.filter((item) => item.unlocked).map(collectionKey);
+  ui.save();
+  updateBadges();
+}
+function openSaveScreen() {
+  openScreen("screen-save");
+  $("save-name").value = "";
+  $("save-password").value = "";
+  $("save-error").textContent = "";
+}
+$("btn-damage-toggle").onclick = () => {
+  meta.showDamage = meta.showDamage === false;
+  ui.save();
+  refreshSettings();
+};
+$("btn-how2").onclick = () => {
+  hideAll();
+  setHubChrome(false);
+  $("screen-how").classList.remove("hidden");
+};
+$("btn-collection").onclick = () => openCollection("tasks");
+$("btn-collection-notice").onclick = () => openCollection("play");
+$("btn-collection-back").onclick = () => showTab(collectionFrom);
+$("btn-save-progress").onclick = () => openSaveScreen();
+$("btn-save-back").onclick = () => showMenu();
+$("btn-save-confirm").onclick = async () => {
+  const name = $("save-name").value.trim();
+  const password = $("save-password").value;
+  $("save-error").textContent = "";
+  try {
+    const result = await api.saveAccount(name, password);
+    applyProfile(result.profile);
+    ui.toast("Прогресс сохранён");
+    showMenu();
+  } catch (error) {
+    $("save-error").textContent = error.message || "Не вышло сохранить";
+  }
+};
+$("btn-login-other").onclick = () => showLogin();
+$("btn-settings-back").onclick = () => showMenu();
+$("btn-how-back").onclick = () => {
+  meta.seenHow = true;
+  ui.save();
+  showMenu();
+};
+$("btn-reroll").onclick = async () => {
+  const btn = $("btn-reroll");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  try {
+    await game.rerollCards(Number(btn.dataset.used) || 0);
+  } catch (err) {
+    ui.toast(err.message || "Реролл не прошёл");
+    btn.disabled = false;
+  }
+};
+$("btn-speed").onclick = () => {
+  game.speed = nextSpeed(game.speed || 1);
+  $("btn-speed").textContent = speedLabel(game.speed);
+};
+$("btn-build").onclick = () => {
+  if ($("build-overlay").classList.contains("hidden")) openBuild();
+  else closeBuild();
+};
+$("btn-surrender").onclick = () => {
+  if (!game.run || game.state !== "play") return;
+  if (!confirm("Сдаться и покинуть бой? Награда за пройденное сохранится.")) return;
+  game.surrender();
+};
+$("btn-build-resume").onclick = () => closeBuild();
+$("btn-next-level").onclick = () => game.continueLevel();
+$("btn-next-chapter").onclick = () => game.continueLevel();
+$("btn-endless").onclick = () => game.beginEndless();
+$("btn-clear-menu").onclick = () => {
+  ui.hideLevelClear();
+  game.exitAfterLevel();
+};
+$("btn-again").onclick = () => {
+  hideAll();
+  beginBattle(game.run?.startedLevel || 1);
+};
+$("btn-result-menu").onclick = () => {
+  $("hud").classList.add("hidden");
+  showMenu();
+};
+
+async function boot() {
+  if (!api.token()) {
+    try {
+      const guest = await api.guest();
+      applyProfile(guest.profile);
+      showMenu();
+      return;
+    } catch (error) {
+      showLogin(error.message || "");
+      return;
+    }
+  }
+  try {
+    const me = await api.me();
+    applyProfile(me.profile);
+    showMenu();
+  } catch (error) {
+    showLogin(error.message || "Сессия не найдена");
+  }
+}
+
+boot();
+game.loop(performance.now());
