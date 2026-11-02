@@ -1,0 +1,119 @@
+ar") this.ui.hideLevelClear();
+    if (snap.state === "result" && prev !== "result" && snap.result) {
+      this.ui.showResult(!!snap.result.won, this.run, snap.result.granted || null, snap.result.pending ? { pending: true } : {});
+    }
+  }
+}
+
+function hex(ctx, x, y, r, color, fill) {
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = (Math.PI / 3) * i - Math.PI / 6;
+    const px = x + Math.cos(a) * r;
+    const py = y + Math.sin(a) * r;
+    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  if (fill) ctx.fill();
+  else ctx.stroke();
+}
+
+function pointLine(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const l2 = dx * dx + dy * dy || 1;
+  const t = clamp(((px - x1) * dx + (py - y1) * dy) / l2, 0, 1);
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
+export { WEAPON_INFO };
+
+function readPending() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PENDING_KEY) || "null");
+    if (!parsed) return [];
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return [];
+  }
+}
+
+function writePending(list) {
+  if (!list.length) localStorage.removeItem(PENDING_KEY);
+  else localStorage.setItem(PENDING_KEY, JSON.stringify(list.length === 1 ? list[0] : list));
+}
+
+function rememberPending(facts) {
+  if (typeof localStorage === "undefined") return;
+  const list = readPending().filter((item) => item.runId !== facts.runId);
+  list.push(facts);
+  writePending(list);
+}
+
+function forgetPending(runId) {
+  writePending(readPending().filter((item) => item.runId !== runId));
+}
+
+export async function retryPendingClaims(onProfile) {
+  for (const facts of readPending()) {
+    try {
+      const result = await api.claimRun(facts);
+      forgetPending(facts.runId);
+      if (result.profile) onProfile?.(result.profile);
+    } catch {
+      return;
+    }
+  }
+}
+
+function partRollKey(body) {
+  if (body.kind === "level") return `${body.runId}:level:${body.level}`;
+  return `${body.runId}:endless:${body.wave}`;
+}
+
+function readPendingPartRolls() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PENDING_PART_ROLL_KEY) || "null");
+    if (!parsed) return [];
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return [];
+  }
+}
+
+function writePendingPartRolls(list) {
+  if (typeof localStorage === "undefined") return;
+  if (!list.length) localStorage.removeItem(PENDING_PART_ROLL_KEY);
+  else localStorage.setItem(PENDING_PART_ROLL_KEY, JSON.stringify(list.length === 1 ? list[0] : list));
+}
+
+function rememberPendingPartRoll(body) {
+  if (typeof localStorage === "undefined") return;
+  const key = partRollKey(body);
+  const list = readPendingPartRolls().filter((item) => partRollKey(item) !== key);
+  list.push(body);
+  writePendingPartRolls(list);
+}
+
+function forgetPendingPartRoll(key) {
+  writePendingPartRolls(readPendingPartRolls().filter((item) => partRollKey(item) !== key));
+}
+
+export async function retryPendingPartRolls(game) {
+  for (const body of readPendingPartRolls()) {
+    try {
+      if (body.kind === "level") await game.noteLevelClear?.({ runId: body.runId, level: body.level });
+      const result = await game.rollPart(body);
+      forgetPendingPartRoll(partRollKey(body));
+      const line = game.applyPartRollResult(body, result);
+      if (line) {
+        if (body.kind === "level") game.ui.setLevelClearPart?.(line);
+        else game.ui.toast?.(line);
+      }
+    } catch {
+      return;
+    }
+  }
+}
