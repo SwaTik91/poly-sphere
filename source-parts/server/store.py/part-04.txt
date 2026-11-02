@@ -1,0 +1,24 @@
+
+        raise ValueError("Некорректный забег")
+    if levels_cleared and started_level + levels_cleared - 1 > MAX_LEVEL:
+        raise ValueError("Некорректный забег")
+    if ended_level not in range(1, MAX_LEVEL + 1) or ended_level < started_level:
+        raise ValueError("Некорректный забег")
+    if ended_wave not in range(1, WAVES_PER_LEVEL + 1):
+        raise ValueError("Некорректный забег")
+    if waves_cleared not in range(0, levels_cleared * WAVES_PER_LEVEL + WAVES_PER_LEVEL + 1):
+        raise ValueError("Некорректный забег")
+    kills = {}
+    for kind in ENEMY_COINS:
+        try:
+            count = int(raw_kills.get(kind, 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Некорректный забег") from exc
+        if count < 0:
+            raise ValueError("Некорректный забег")
+        kills[kind] = count
+    caps = kill_caps(waves_cleared)
+    for kind, count in kills.items():
+        if count > caps[kind]:
+            raise ValueError("Некорректный забег")
+    return kills, levels_cleared, ended_level, ended_wave, waves_cleared, started_level
