@@ -36,7 +36,18 @@ jobs:
                   return gap + data
               return data + gap
           manifest = json.loads(Path(".github/slice-manifest.json").read_text())
-          files = manifest["files"] if isinstance(manifest, dict) else manifest
+          if isinstance(manifest, list):
+              files = list(manifest)
+          else:
+              files = list(manifest.get("files", []))
+              for inc in manifest.get("includes", []):
+                  extra = json.loads(Path(inc).read_text())
+                  if isinstance(extra, list):
+                      files.extend(extra)
+                  elif isinstance(extra, dict) and "chunks" in extra:
+                      files.append(extra)
+                  else:
+                      files.extend(extra.get("files", []))
           for item in files:
               data = "".join(piece(c) for c in item["chunks"])
               dest = Path(item["path"])
