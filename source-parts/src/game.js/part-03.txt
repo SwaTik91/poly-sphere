@@ -1,0 +1,577 @@
+esult(!!facts.won, run, null, { pending: true });
+    }
+  }
+
+  revive() {
+    const r = this.run;
+    if (!r || (r.lives || 0) <= 0) return false;
+    r.lives -= 1;
+    const tw = r.tower;
+    tw.hp = tw.maxHp;
+    tw.hitCd = 1;
+    if (r.seats) for (const seat of r.seats) seat.hitCd = 1;
+    this.shoveToEdge();
+    this.shake = Math.max(this.shake, 8);
+    r.fx.push({ kind: "ring", x: tw.x, y: tw.y, r: 24, max: Math.max(this.worldW, this.worldH), life: 0.55, color: "#7ee8ff" });
+    this.ui.toast?.(r.lives > 0 ? `ЖИЗНЬ · ещё ${r.lives}` : "ПОСЛЕДНЯЯ ЖИЗНЬ");
+    return true;
+  }
+
+  shoveToEdge() {
+    const r = this.run;
+    const tw = r.tower;
+    const margin = 18;
+    for (const e of r.enemies) {
+      if (e.dead || e.boss) continue;
+      let dx = e.x - tw.x;
+      let dy = e.y - tw.y;
+      let len = Math.hypot(dx, dy);
+      if (len < 8) {
+        const a = this.rand() * Math.PI * 2;
+        dx = Math.cos(a);
+        dy = Math.sin(a);
+        len = 1;
+      }
+      dx /= len;
+      dy /= len;
+      const pad = margin + (e.r || 16);
+      let t = Infinity;
+      if (dx > 1e-6) t = Math.min(t, (this.worldW - pad - tw.x) / dx);
+      else if (dx < -1e-6) t = Math.min(t, (pad - tw.x) / dx);
+      if (dy > 1e-6) t = Math.min(t, (this.worldH - pad - tw.y) / dy);
+      else if (dy < -1e-6) t = Math.min(t, (pad - tw.y) / dy);
+      if (!Number.isFinite(t) || t < 0) continue;
+      e.x = tw.x + dx * t;
+      e.y = tw.y + dy * t;
+    }
+  }
+
+  update(dt) {
+    if (this.state !== "play" || !this.run) {
+      this.draw(0);
+      return;
+    }
+    const r = this.run;
+    const tw = r.tower;
+    r.clock = (r.clock || 0) + dt;
+
+    if (r.seats) ensureSeats(r, this.worldW, this.worldH);
+    else {
+      tw.x = this.worldW / 2;
+      tw.y = this.worldH / 2;
+    }
+
+    if (r.seats) {
+      for (const seat of r.seats) {
+        const focused = seat.pointer?.down;
+        let targetAng = seat.angle;
+        if (focused) targetAng = angTo(seat, seat.pointer);
+        else {
+          const nearest = this.stickyTarget(seat);
+          if (nearest) targetAng = angTo(seat, nearest);
+        }
+        const diff = normAng(targetAng - seat.angle);
+        const turn = focused ? 12 : Math.max(r.gun.autoTurn, 8);
+        seat.angle += clamp(diff, -turn * dt, turn * dt);
+        seat.cd -= dt;
+        seat.hitCd = Math.max(0, seat.hitCd - dt);
+        if (seat.cd <= 0) {
+          this.fireGun(seat);
+          seat.cd = 1 / r.gun.rate;
+        }
+      }
+    } else {
+      const focused = this.pointer.down;
+      let targetAng = r.gun.angle;
+      if (focused) targetAng = angTo(tw, this.pointer);
+      else {
+        const nearest = this.stickyTarget(r.gun, tw);
+        if (nearest) targetAng = angTo(tw, nearest);
+      }
+      const diff = normAng(targetAng - r.gun.angle);
+      const turn = focused ? 12 : Math.max(r.gun.autoTurn, 8);
+      r.gun.angle += clamp(diff, -turn * dt, turn * dt);
+      r.gun.cd -= dt;
+      if (r.gun.cd <= 0) {
+        this.fireGun();
+        r.gun.cd = 1 / r.gun.rate;
+      }
+    }
+
+    if (r.overdrive.left > 0) r.overdrive.left -= dt;
+    if (tw.regen) tw.hp = Math.min(tw.maxHp, tw.hp + tw.regen * dt);
+    tw.hitCd = Math.max(0, tw.hitCd - dt);
+
+    for (const [id, st] of Object.entries(r.wepStats)) {
+      if (!r.weapons[id] || st.timer === undefined) continue;
+      st.timer -= dt;
+      if (st.timer <= 0) {
+        if (id === "laser") this.fireLaser();
+        if (id === "scatter") this.fireScatter();
+        if (id === "grenade") this.fireGrenade();
+        if (id === "emp") this.fireEmp();
+        st.timer = st.cd;
+      }
+      if (id === "scatter" && st.pending > 0) {
+        st.pendingIn -= dt;
+        if (st.pendingIn <= 0) {
+          st.pending = 0;
+          const t = this.nearest(r.tower);
+          if (t) this.scatterVolley(st, t);
+        }
+      }
+      if (id === "laser" && st.spin) st.spinAngle = (st.spinAngle || 0) + dt * 1.8;
+      if (id === "emp" && st.pending > 0) {
+        st.pendingIn -= dt;
+        if (st.pendingIn <= 0) {
+          st.pending -= 1;
+          st.pendingIn = 0.16;
+          this.pulseEmp(true);
+        }
+      }
+    }
+    for (const beam of r.beams) {
+      if (beam.life <= 0) continue;
+      beam.tick -= dt;
+      if (beam.tick <= 0) {
+        beam.tick = 0.2;
+        for (const e of r.enemies) {
+          if (e.dead) continue;
+          if (pointLine(e.x, e.y, beam.x1, beam.y1, beam.x2, beam.y2) < beam.w + e.r) this.contactDamage(e, beam.dps * 0.2, "#60a5fa", beam.tag || "laser");
+        }
+      }
+      beam.life -= dt;
+    }
+    r.beams = r.beams.filter((beam) => beam.life > 0);
+
+    if (r.weapons.orb && r.wepStats.orb) this.updateOrbs(dt, tw);
+    for (const pool of r.pools) {
+      pool.life -= dt;
+      for (const e of r.enemies) {
+        if (e.dead || dist(e, pool) > pool.r) continue;
+        const poolHit = pool.dps * dt * (r.might || 1);
+        this.tagDamage(pool.tag, poolHit);
+        e.hp -= poolHit;
+        e.slow = Math.max(e.slow || 0, pool.resin ? 0.25 : 0.4);
+        e.slowMul = 0.5;
+        if (pool.pit) e.freeze = Math.max(e.freeze || 0, pool.pit);
+        if (pool.pull && !e.boss) {
+          const gap = dist(e, pool) - (e.r || 16);
+          if (gap > 10) {
+            const a = angTo(e, pool);
+            const tug = 16 * dt * Math.min(1, gap / 48);
+            e.x += Math.cos(a) * tug;
+            e.y += Math.sin(a) * tug;
+          }
+        }
+        if (e.hp <= 0) {
+          const x = e.x;
+          const y = e.y;
+          this.kill(e);
+          if (pool.magma) this.explode(x, y, 56, pool.dps, pool.tag);
+        }
+      }
+    }
+    r.pools = r.pools.filter((pool) => pool.life > 0);
+
+    if (r.weapons.drone && r.drone) {
+      this.syncDrones();
+      const st = r.drone;
+      const claimed = new Set();
+      const leash = droneLeash(this.worldW, this.worldH);
+      r.drones.forEach((d, i) => {
+        const own = this.nearest(d, (e) => !claimed.has(e));
+        const t = own || this.nearest(d);
+        if (t) claimed.add(t);
+        const n = r.drones.length;
+        const spread = (i - (n - 1) / 2) * 0.85;
+        const orbit = d.orbit ?? i * 1.2;
+        const hover = t ? angTo(tw, t) + spread : orbit;
+        const want = t
+          ? { x: t.x + Math.cos(hover) * 110, y: t.y + Math.sin(hover) * 110 }
+          : { x: tw.x + Math.cos(orbit) * 150, y: tw.y + Math.sin(orbit) * 150 };
+        const home = parkDrone(want.x, want.y, tw, leash, this.worldW, this.worldH);
+        const glide = Math.min(0.08, 1.15 * dt);
+        d.x = lerp(d.x, home.x, glide);
+        d.y = lerp(d.y, home.y, glide);
+        d.cd -= dt;
+        if (t && d.cd <= 0) {
+          const pellets = st.pellets || 1;
+          const a = angTo(d, t);
+          for (let i = 0; i < pellets; i++) {
+            const ang = a + (i - (pellets - 1) / 2) * 0.34;
+            r.bullets.push({
+              x: d.x,
+              y: d.y,
+              vx: Math.cos(ang) * (st.speed || 560),
+              vy: Math.sin(ang) * (st.speed || 560),
+              dmg: st.dmg,
+              r: 3.4,
+              life: st.life || 0.9,
+              pierce: st.pierce || 0,
+              falloff: st.falloff || 0,
+              bombRadius: st.bombOnHit ? st.radius : 0,
+              bombDmg: st.bombOnHit ? st.dmg * st.bombMul : 0,
+              color: "#f472b6",
+              kind: "gun",
+              tag: "drone",
+              hit: new Set(),
+            });
+          }
+          if (st.bombs && !st.bombOnHit) this.explode(d.x, d.y + 10, st.radius, st.dmg * st.bombMul, "drone");
+          d.cd = st.cd;
+        }
+      });
+      const min = 78;
+      for (let i = 0; i < r.drones.length; i++) {
+        for (let j = i + 1; j < r.drones.length; j++) {
+          const a = r.drones[i];
+          const b = r.drones[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const gap = Math.hypot(dx, dy);
+          if (gap >= min) continue;
+          const nx = gap < 0.01 ? 1 : dx / gap;
+          const ny = gap < 0.01 ? 0 : dy / gap;
+          const push = (min - gap) * 0.5;
+          a.x -= nx * push;
+          a.y -= ny * push;
+          b.x += nx * push;
+          b.y += ny * push;
+        }
+      }
+      for (const d of r.drones) {
+        const home = parkDrone(d.x, d.y, tw, leash, this.worldW, this.worldH);
+        d.x = home.x;
+        d.y = home.y;
+      }
+    }
+
+    const endlessBusy = r.spawnQueue.length > 0 || r.enemies.some((e) => !e.dead) || r.bossIntro > 0;
+    if (r.endless && endlessBusy && r.waveTimer > 0) {
+      r.waveTimer -= dt;
+      if (r.waveTimer <= 0) {
+        if (this.advanceEndless(true)) {
+          this.draw(dt);
+          return;
+        }
+      }
+    }
+
+    if (r.bossIntro > 0) {
+      r.bossIntro -= dt;
+      r.bossPulse -= dt;
+      this.shake = Math.max(this.shake, 6);
+      if (r.bossPulse <= 0) {
+        r.bossPulse = 0.42;
+        const cx = this.worldW / 2;
+        const cy = this.worldH / 2;
+        this.run.fx.push({ kind: "ring", x: cx, y: cy, r: 24, max: 340, life: 0.5, color: "#ff5d9a" });
+      }
+      if (r.bossIntro <= 0) this.releaseBoss();
+    } else if (r.spawnQueue.length) {
+      r.spawnTimer -= dt;
+      if (r.spawnTimer <= 0) {
+        for (let n = 0; n < 10 && r.spawnQueue.length; n++) this.spawnEnemy(r.spawnQueue.shift());
+        r.spawnTimer = this.spawnGap();
+      }
+    } else if (!r.enemies.some((e) => !e.dead)) {
+      r.wavePause += dt;
+      if (r.wavePause > 1.15) {
+        if (r.endless) {
+          if (this.advanceEndless(false)) {
+            this.draw(dt);
+            return;
+          }
+          this.draw(dt);
+          return;
+        }
+        r.wavesCleared += 1;
+        if (r.wave === LEVEL_WAVES) {
+          this.showLevelClear();
+          this.draw(dt);
+          return;
+        }
+        r.wave += 1;
+        this.queueWave();
+      }
+    }
+
+    for (const e of r.enemies) {
+      if (e.dead) continue;
+      const home = r.seats ? nearestSeat(r.seats, e) : tw;
+      const a = angTo(e, home);
+      let slow = 1;
+      if (e.freeze > 0) {
+        e.freeze -= dt;
+        if (!e.boss) slow = 0;
+      }
+      if (slow !== 0 && e.slow > 0) {
+        e.slow -= dt;
+        slow = e.slowMul ?? 0.45;
+      }
+      let vx = Math.cos(a) * e.speed * slow;
+      let vy = Math.sin(a) * e.speed * slow;
+      if (e.dash) {
+        if (e.dashLeft > 0) {
+          e.dashLeft -= dt;
+          vx *= e.dash.mul;
+          vy *= e.dash.mul;
+        } else {
+          e.dashCd = (e.dashCd ?? e.dash.cd) - dt;
+          if (e.dashCd <= 0) {
+            e.dashLeft = e.dash.dur;
+            e.dashCd = e.dash.cd;
+          }
+        }
+      }
+      if (e.zigzag) {
+        e.phase += dt * 8;
+        vx += Math.cos(e.phase) * 70;
+      }
+      if (e.bossId === "satellite") {
+        const gap = dist(e, home);
+        if (gap < 258) {
+          vx = -Math.cos(a) * e.speed * 0.4 * (slow || 1);
+          vy = -Math.sin(a) * e.speed * 0.4 * (slow || 1);
+        } else if (gap < 294) {
+          vx = 0;
+          vy = 0;
+        }
+      }
+      if (e.bossId === "reaper" && e.reaperWind > 0) {
+        vx = 0;
+        vy = 0;
+      } else if (e.reaperDash > 0) {
+        vx = (e.reaperAx || 0) * 260;
+        vy = (e.reaperAy || 0) * 260;
+      }
+      e.x += vx * dt;
+      e.y += vy * dt;
+      {
+        // Враг не должен заходить внутрь ядра: пули рождаются у края и иначе проходят мимо.
+        const rim = r.seats ? home : tw;
+        const minD = e.r + (rim.r || tw.r) - 1;
+        const dd = dist(e, rim);
+        if (dd < minD) {
+          const ang = dd > 0.001 ? Math.atan2(e.y - rim.y, e.x - rim.x) : this.rand() * Math.PI * 2;
+          e.x = rim.x + Math.cos(ang) * minD;
+          e.y = rim.y + Math.sin(ang) * minD;
+        }
+      }
+      if (!e.boss && e.shield < e.maxShield) e.shield = Math.min(e.maxShield, e.shield + 4 * dt);
+      if (e.boss) this.updateBoss(e, dt);
+      if (e.healAura) {
+        e.healT = (e.healT ?? this.rand() * e.healAura.tick) - dt;
+        if (e.healT <= 0) {
+          e.healT = e.healAura.tick;
+          const rad = e.healAura.radius;
+          for (const o of r.enemies) {
+            if (o === e || o.dead || o.hp >= o.maxHp) continue;
+            if (dist(e, o) < rad) o.hp = Math.min(o.maxHp, o.hp + e.healAura.hps);
+          }
+        }
+      }
+
+      if (e.burn > 0) {
+        e.burn -= dt;
+        const burnHit = (e.burnDps || 0) * dt * (r.might || 1);
+        this.tagDamage(e.burnTag || "laser", burnHit);
+        e.hp -= burnHit;
+        if (e.hp <= 0) {
+          const x = e.x;
+          const y = e.y;
+          const boom = this.run.wepStats.laser?.ash ? e.burnDps : 0;
+          this.kill(e);
+          if (boom) this.explode(x, y, 78, boom, e.burnTag || "laser");
+          continue;
+        }
+      }
+      const emp = r.wepStats.emp;
+      if (emp?.trap && r.weapons.emp && dist(e, tw) < (emp.full ? 9999 : emp.radius)) {
+        e.slow = Math.max(e.slow || 0, 0.2);
+        e.slowMul = emp.slowMul ?? 0.45;
+        e.inEmp = true;
+      } else if (e.inEmp) {
+        e.inEmp = false;
+        if (emp?.prison) e.slow = Math.max(e.slow || 0, emp.prison);
+      }
+      const hitCore = r.seats ? home : tw;
+      if (dist(e, hitCore) < e.r + (hitCore.r || tw.r) && (hitCore.hitCd || 0) <= 0 && tw.hitCd <= 0) {
+        const orb = r.wepStats.orb;
+        const blocked = tw.guard > 0 || (orb?.branch === "ward" && orb.guard > 0);
+        if (blocked) {
+          if (tw.guard > 0) tw.guard -= 1;
+          else orb.guard -= 1;
+          tw.hitCd = 0.35;
+          hitCore.hitCd = 0.35;
+          this.burst(hitCore.x, hitCore.y, "#34d399", 10);
+          if (orb?.reflect) this.damage(e, e.dmg * 3, "#34d399", true, false, "orb");
+          if (orb?.flash) this.explode(tw.x, tw.y, orb.radius, orb.dmg * 6, "orb");
+          if (orb?.mend) tw.hp = Math.min(tw.maxHp, tw.hp + orb.mend);
+          continue;
+        }
+        const melee = e.boss && e.bossId === "monolith" ? e.dmg * 0.55 : e.dmg;
+        tw.hp -= melee;
+        tw.hitCd = e.boss ? (e.bossId === "monolith" ? 1.8 : 1.05) : 0.45;
+        hitCore.hitCd = tw.hitCd;
+        this.shake = Math.max(this.shake, e.boss ? 6 : 1.2);
+        this.burst(hitCore.x, hitCore.y, "#ff5d7a", 8);
+        if (e.boss) {
+          e.x -= Math.cos(a) * 46;
+          e.y -= Math.sin(a) * 46;
+        } else {
+          e.x -= Math.cos(a) * 12;
+          e.y -= Math.sin(a) * 12;
+        }
+        if (tw.hp <= 0) {
+          if (this.revive()) {
+            this.ui.updateHud(r);
+            continue;
+          }
+          tw.hp = 0;
+          this.end(false, "died");
+          this.draw(dt);
+          return;
+        }
+        this.ui.updateHud(r);
+      }
+    }
+
+    for (const b of r.bullets) {
+      const x0 = b.x;
+      const y0 = b.y;
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      b.life -= dt;
+      const bounce = reflectBullet(b, this.worldW, this.worldH);
+      if (bounce?.swarm && !bounce.died) this.spawnSwarm(b);
+      this.guideBullet(b, bounce, dt);
+      if (b.kind === "nade" && (b.life < 0.05 || this.hitAny(b))) {
+        this.blast(b);
+        b.life = 0;
+        continue;
+      }
+      for (const e of r.enemies) {
+        if (e.dead || b.hit.has(e)) continue;
+        if (pointLine(e.x, e.y, x0, y0, b.x, b.y) < b.r + e.r) {
+          let dmg = b.dmg;
+          if (this.run?.syn?.empBurst && b.tag === "gun" && ((e.slow || 0) > 0 || (e.freeze || 0) > 0)) dmg *= 1.4;
+          const crit = this.damage(e, dmg, b.color, true, !!b.guaranteedCrit, b.tag);
+          if (crit && b.canChain) r.gun.chainLeft = Number(r.gun.series) || 0;
+          if (b.knock && !e.boss) {
+            const a = angTo(tw, e);
+            let push = b.knock * 0.12;
+            if (b.tag === "scatter") {
+              const now = r.clock || 0;
+              if (now - (e.scKnockAt || -10) > 0.28) {
+                e.scKnockAt = now;
+                e.scKnockUsed = 0;
+              }
+              const slowMul = b.cordon ? 0.28 : b.bog ? 0.45 : 1;
+              const room = Math.max(0, scatterPushCap(e, b.knock, r.wepStats.scatter?.cd, slowMul) - (e.scKnockUsed || 0));
+              push = Math.min(push, room);
+              e.scKnockUsed = (e.scKnockUsed || 0) + push;
+            }
+            if (push > 0) {
+              e.x += Math.cos(a) * push;
+              e.y += Math.sin(a) * push;
+            }
+          }
+          if (b.bog || b.cordon) {
+            e.slow = Math.max(e.slow || 0, 1);
+            e.slowMul = b.cordon ? 0.28 : 0.45;
+          }
+          if (b.cluster && b.shards && !e.dead) this.burstPellets(e.x, e.y, b.shards, b.dmg * (b.shardMul || 0.45), b.shardLife || 0.16, b.shardPierce || 0, !!b.echo, b.tag || "scatter");
+          if (b.avalanche && e.dead) this.burstPellets(e.x, e.y, b.shards || 4, b.dmg * 0.5, 0.2, 0, false, b.tag || "scatter");
+          b.hit.add(e);
+          if (bulletShouldStop(b)) {
+            if (b.bombRadius) this.explode(b.x, b.y, b.bombRadius, b.bombDmg, b.tag || "drone");
+            b.life = 0;
+            break;
+          }
+        }
+      }
+    }
+
+    if (this.updateBossShots(dt)) {
+      this.draw(dt);
+      return;
+    }
+    r.bullets = r.bullets.filter((b) => b.life > 0 && b.x > -40 && b.x < this.worldW + 40 && b.y > -40 && b.y < this.worldH + 40);
+    r.enemies = r.enemies.filter((e) => !e.dead);
+    for (const f of r.fx) {
+      f.life -= dt;
+      if (f.kind === "dot") {
+        f.x += f.vx * dt;
+        f.y += f.vy * dt;
+      }
+      if (f.kind === "text") f.y += f.vy * dt;
+      if (f.kind === "ring") f.r = lerp(f.r, f.max, 8 * dt);
+    }
+    r.fx = r.fx.filter((f) => f.life > 0);
+    r.comboFlash = Math.max(0, r.comboFlash - dt);
+    this.shake = Math.max(0, this.shake - dt * 18);
+    this.ui.setCore?.(r);
+    this.draw(dt);
+  }
+
+  hitAny(b) {
+    return this.run.enemies.some((e) => !e.dead && dist(b, e) < 16 + e.r);
+  }
+
+  drawPool(ctx, pool) {
+    const t = this.run.clock || 0;
+    const r = Math.min(pool.r, 280);
+    if (r < 4) return;
+    const pulse = 0.5 + 0.5 * Math.sin(t * 2.6 + pool.x * 0.02);
+    ctx.save();
+    const glow = ctx.createRadialGradient(pool.x, pool.y - r * 0.08, r * 0.08, pool.x, pool.y, r);
+    glow.addColorStop(0, `rgba(255, 214, 140, ${0.5 + pulse * 0.14})`);
+    glow.addColorStop(0.24, `rgba(251, 113, 133, ${0.36})`);
+    glow.addColorStop(0.66, `rgba(136, 19, 55, ${0.3})`);
+    glow.addColorStop(1, "rgba(40, 6, 16, 0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    const steps = 36;
+    for (let i = 0; i <= steps; i++) {
+      const a = (i / steps) * Math.PI * 2;
+      const n = 1 + Math.sin(a * 4 + t * 1.7) * 0.045 + Math.sin(a * 7 - t * 1.1) * 0.025;
+      const px = pool.x + Math.cos(a) * r * n;
+      const py = pool.y + Math.sin(a) * r * n;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = `rgba(255, 196, 140, ${0.4 + pulse * 0.4})`;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = "rgba(251, 113, 133, 0.75)";
+    ctx.shadowBlur = 14;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    for (let i = 0; i < 3; i++) {
+      const phase = (t * 0.42 + i / 3) % 1;
+      ctx.globalAlpha = (1 - phase) * 0.5;
+      ctx.strokeStyle = i === 1 ? "#ffe4c4" : "#fda4af";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(pool.x, pool.y, r * (0.16 + phase * 0.7), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    for (let i = 0; i < 6; i++) {
+      const life = (t * 0.33 + i * 0.17) % 1;
+      const a = i * 1.15 + t * 0.45;
+      const rad = r * (0.14 + life * 0.6);
+      ctx.globalAlpha = (1 - life) * 0.75;
+      ctx.fillStyle = i % 2 ? "#fff1d6" : "#fecdd3";
+      ctx.beginPath();
+      ctx.arc(pool.x + Math.cos(a) * rad * 0.7, pool.y + Math.sin(a) * rad * 0.48 - life * r * 0.2, 1.2 + (1 - life) * 1.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  draw() {
+    if (this.headless || !this.ctx) return;
+    const ctx = this.
