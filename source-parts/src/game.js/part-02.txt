@@ -1,0 +1,617 @@
+ let x = home.x;
+      let y = home.y;
+      if (fly) {
+        const dest = fly.back ? home : { x: fly.tx, y: fly.ty };
+        const a = angTo(fly, dest);
+        fly.x += Math.cos(a) * 720 * dt;
+        fly.y += Math.sin(a) * 720 * dt;
+        x = fly.x;
+        y = fly.y;
+        if (o.through && !fly.back) {
+          for (const e of r.enemies) {
+            if (!e.dead && dist(e, fly) < e.r + 14) this.contactDamage(e, o.dmg * dt * 10, "#34d399", "orb");
+          }
+        }
+        if (!fly.hit && dist(fly, { x: fly.tx, y: fly.ty }) < 18) {
+          fly.hit = true;
+          const victim = this.nearest(fly);
+          if (victim) {
+            this.damage(victim, o.dmg * (o.lungeMul || 8), "#34d399", true, false, "orb");
+            if (o.anchor && !victim.dead) fly.anchor = victim;
+          }
+          if (fly.hook) {
+            const next = this.nearest(fly, (e) => e !== victim);
+            if (next) {
+              fly.tx = next.x;
+              fly.ty = next.y;
+              fly.hit = false;
+              fly.hook = false;
+            } else fly.back = true;
+          } else if (!fly.anchor) fly.back = true;
+        }
+        if (fly.anchor && !fly.anchor.dead) {
+          fly.x = fly.anchor.x;
+          fly.y = fly.anchor.y;
+          x = fly.x;
+          y = fly.y;
+          this.contactDamage(fly.anchor, o.dmg * dt * 8, "#34d399", "orb");
+        } else if (fly.anchor) fly.back = true;
+        if (fly.back && dist(fly, home) < 16) fly.done = true;
+      }
+      spots.push({ x, y, home });
+      const reach = 12 * (o.reach || 1);
+      for (const e of r.enemies) {
+        if (e.dead) continue;
+        const touch = dist(e, { x, y }) < e.r + reach;
+        if (touch) {
+          this.contactDamage(e, o.dmg * dt * 8, "#34d399", "orb");
+          if (o.bleed) this.ignite(e, o.dmg * 4, "orb");
+          if (o.knock && o.branch === "ward" && !e.boss) {
+            const a = angTo(tw, e);
+            e.x += Math.cos(a) * o.knock * dt;
+            e.y += Math.sin(a) * o.knock * dt;
+          }
+          if (o.pin && o.guard > 0) {
+            e.slow = Math.max(e.slow || 0, 0.2);
+            e.slowMul = 0.08;
+          }
+        }
+        if (o.wall && o.guard > 0 && !e.boss && dist(e, tw) < o.radius && dist(e, home) < 28) {
+          const a = angTo(tw, e);
+          e.x = tw.x + Math.cos(a) * (o.radius + e.r);
+          e.y = tw.y + Math.sin(a) * (o.radius + e.r);
+        }
+      }
+      if (o.inner) {
+        const inner = { x: tw.x + (home.x - tw.x) * 0.45, y: tw.y + (home.y - tw.y) * 0.45 };
+        for (const e of r.enemies) {
+          if (!e.dead && dist(e, inner) < e.r + reach) this.contactDamage(e, o.dmg * dt * 8, "#34d399", "orb");
+        }
+      }
+    }
+    if (o.saw) {
+      for (const e of r.enemies) {
+        if (e.dead || Math.abs(dist(e, tw) - o.radius) >= 16 + e.r) continue;
+        this.contactDamage(e, o.dmg * dt * 6, "#34d399", "orb");
+        if (o.bleed) this.ignite(e, o.dmg * 4, "orb");
+      }
+    }
+    o.spots = spots;
+  }
+
+  orbHome(o, i, tw) {
+    const a = this.run.orbAngle + (i * Math.PI * 2) / Math.max(1, o.count);
+    return { x: tw.x + Math.cos(a) * o.radius, y: tw.y + Math.sin(a) * o.radius };
+  }
+
+  burstPellets(x, y, n, dmg, life, pierce, again, tag = "scatter") {
+    for (let i = 0; i < n; i++) {
+      const a = (Math.PI * 2 * i) / n;
+      this.run.bullets.push({
+        x,
+        y,
+        vx: Math.cos(a) * 460,
+        vy: Math.sin(a) * 460,
+        dmg,
+        r: 3,
+        pierce,
+        life,
+        color: "#fde68a",
+        kind: "pellet",
+        tag,
+        cluster: again,
+        shards: again ? 3 : 0,
+        shardMul: 0.45,
+        shardLife: 0.12,
+        echo: false,
+        avalanche: false,
+        hit: new Set(),
+      });
+    }
+  }
+
+  fireGrenade(quiet = false) {
+    const s = this.run.wepStats.grenade;
+    const t = this.densest() || this.nearest(this.run.tower);
+    if (!t) return;
+    this.run.bullets.push({
+      x: this.run.tower.x,
+      y: this.run.tower.y,
+      vx: (t.x - this.run.tower.x) * 1.6,
+      vy: (t.y - this.run.tower.y) * 1.6,
+      dmg: s.dmg,
+      r: 7,
+      life: 0.85,
+      color: "#fb7185",
+      kind: "nade",
+      tag: "grenade",
+      radius: s.radius,
+      shape: s.shape || "",
+      reach: s.reach || 1,
+      width: s.width || 0.7,
+      bombs: s.bombs || 0,
+      bombMul: s.bombMul || 0.55,
+      bombSpread: s.bombSpread || 1,
+      core: !!s.core,
+      twin: !!s.twin && !quiet,
+      pool: s.pool || 0,
+      poolDmg: s.poolDmg || s.dmg * 0.35,
+      poolAll: !!s.poolAll,
+      resin: !!s.resin,
+      pull: !!s.pull,
+      pit: s.pit || 0,
+      magma: !!s.magma,
+      twice: !!s.twice,
+      hit: new Set(),
+    });
+  }
+
+  fireEmp() {
+    const s = this.run.wepStats.emp;
+    this.pulseEmp(false);
+    const extra = Math.max(0, (s.hits || 1) - 1);
+    if (extra) {
+      s.pending = extra;
+      s.pendingIn = 0.16;
+    }
+  }
+
+  pulseEmp(quiet) {
+    const s = this.run.wepStats.emp;
+    const tw = this.run.tower;
+    const reach = s.full ? Math.hypot(this.worldW, this.worldH) : s.radius;
+    this.run.fx.push({ kind: "ring", x: tw.x, y: tw.y, r: 20, max: Math.min(reach, 520), life: 0.35, color: "#c084fc" });
+    const hit = new Set();
+    for (const e of this.run.enemies) {
+      if (e.dead) continue;
+      const inside = dist(e, tw) < reach || s.silence;
+      if (!inside) continue;
+      hit.add(e);
+      this.strikeEmp(e, s, tw, reach);
+    }
+    if (s.ring2) {
+      const outer = reach * s.ring2;
+      this.run.fx.push({ kind: "ring", x: tw.x, y: tw.y, r: reach, max: Math.min(outer, 640), life: 0.4, color: "#e9d5ff" });
+      for (const e of this.run.enemies) {
+        if (e.dead || hit.has(e)) continue;
+        if (dist(e, tw) < outer) this.strikeEmp(e, s, tw, outer);
+      }
+    }
+    this.chainEmp(s, hit, reach);
+    if (!quiet && s.heal) tw.hp = Math.min(tw.maxHp, tw.hp + s.heal);
+    if (!quiet && s.guard) tw.guard = Math.max(tw.guard || 0, s.guard);
+    this.audio.boom();
+  }
+
+  strikeEmp(e, s, tw, reach) {
+    this.damage(e, s.dmg, "#c084fc", true, false, "emp");
+    if (e.dead) return;
+    const mul = s.slowMul ?? 0.45;
+    const dur = s.slowDur || 1.15;
+    if (s.freeze) e.freeze = Math.max(e.freeze || 0, s.freeze);
+    e.slow = Math.max(e.slow || 0, dur);
+    e.slowMul = mul;
+    e.inEmp = dist(e, tw) < reach;
+    const fromCore = dist(e, tw);
+    const pushes = e.empPushes || 0;
+    const push = e.boss || pushes >= EMP_PUSH_LIMIT ? 0 : empPushDistance(e, s, fromCore, reach);
+    if (push > 0) {
+      const a = angTo(tw, e);
+      e.x = clamp(e.x + Math.cos(a) * push, e.r, this.worldW - e.r);
+      e.y = clamp(e.y + Math.sin(a) * push, e.r, this.worldH - e.r);
+      e.empPushes = pushes + 1;
+    }
+  }
+
+  chainEmp(s, hit, reach) {
+    if (!s.chain) return;
+    const extra = s.partChain || 0;
+    const jumps = s.chainJumps ? s.chainJumps + extra : extra || (s.chain === "all" ? 8 : 5);
+    const mul = s.chainMul || 0.8;
+    const pool = [...hit];
+    for (let n = 0; n < jumps; n++) {
+      const from = pool[n];
+      if (!from) break;
+      let next = null;
+      let best = 1e9;
+      for (const e of this.run.enemies) {
+        if (e.dead || hit.has(e)) continue;
+        if (s.chain !== "all" && dist(e, this.run.tower) > reach) continue;
+        const d = dist(from, e);
+        if (d < best) {
+          best = d;
+          next = e;
+        }
+      }
+      if (!next || (s.chain !== "all" && best > 180)) break;
+      hit.add(next);
+      pool.push(next);
+      this.damage(next, s.dmg * mul, "#c084fc", true, false, "emp");
+      this.run.fx.push({ kind: "beam", x1: from.x, y1: from.y, x2: next.x, y2: next.y, life: 0.12, color: "#e9d5ff", w: 3 });
+    }
+  }
+
+  blast(b) {
+    const x = b.x;
+    const y = b.y;
+    if (!b.shape) this.explode(x, y, b.radius, b.dmg);
+    else this.shapeBlast(b);
+    if (b.core) this.explode(x, y, b.radius, b.dmg);
+    if (b.bombs) {
+      const spread = (b.radius || 70) * (b.bombSpread || 1);
+      for (let i = 0; i < b.bombs; i++) {
+        const a = (Math.PI * 2 * i) / b.bombs;
+        const bx = x + Math.cos(a) * spread * 0.36;
+        const by = y + Math.sin(a) * spread * 0.36;
+        this.explode(bx, by, 52 * (b.bombSpread || 1), b.dmg * (b.bombMul || 0.55));
+        if (b.twice) this.explode(bx, by, 28, b.dmg * (b.bombMul || 0.55) * 0.6);
+      }
+    }
+    if (b.pool) {
+      this.run.pools.push({
+        x,
+        y,
+        r: b.poolAll ? Math.hypot(this.worldW, this.worldH) : b.radius,
+        life: b.pool,
+        dps: b.poolDmg,
+        resin: b.resin,
+        pull: b.pull,
+        pit: b.pit,
+        magma: b.magma,
+        tag: b.tag || "grenade",
+      });
+    }
+    if (b.twin) this.fireGrenade(true);
+  }
+
+  shapeBlast(b) {
+    const ang = Math.atan2(b.vy, b.vx);
+    const arms = b.shape === "star" ? 4 : b.shape === "cross" ? 2 : 1;
+    const reach = (b.radius || 88) * (b.reach || 1.3);
+    const width = b.width || 0.7;
+    this.run.fx.push({ kind: "ring", x: b.x, y: b.y, r: 8, max: b.radius, life: 0.25, color: "#fb7185" });
+    for (let arm = 0; arm < arms; arm++) {
+      const a = ang + (arm * Math.PI) / arms;
+      const x2 = b.x + Math.cos(a) * reach;
+      const y2 = b.y + Math.sin(a) * reach;
+      this.run.fx.push({ kind: "beam", x1: b.x, y1: b.y, x2, y2, life: 0.16, color: "#fb7185", w: 10 + width * 8 });
+      for (const e of this.run.enemies) {
+        if (e.dead) continue;
+        const rel = normAng(angTo(b, e) - a);
+        if (Math.abs(rel) < width && dist(b, e) < reach + e.r) this.damage(e, b.dmg, "#fb7185", true, false, b.tag || "grenade");
+      }
+    }
+  }
+
+  explode(x, y, radius, dmg, tag = "grenade") {
+    this.burst(x, y, "#fb7185", 18);
+    this.audio.boom();
+    const burn = this.run?.syn?.burnBlast ? dmg * 0.3 : 0;
+    for (const e of this.run.enemies) {
+      if (!e.dead && dist(e, { x, y }) < radius) {
+        this.damage(e, dmg, "#fb7185", true, false, tag);
+        if (burn && !e.dead) this.ignite(e, burn, tag);
+      }
+    }
+  }
+
+  spark(x, y, color, n) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 40 + Math.random() * 140;
+      this.run.fx.push({
+        kind: "dot",
+        x,
+        y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp,
+        life: 0.28 + Math.random() * 0.25,
+        color,
+        r: 1.6,
+      });
+    }
+  }
+
+  burst(x, y, color, n) {
+    this.spark(x, y, color, n);
+    this.run.fx.push({ kind: "ring", x, y, r: 8, max: 48, life: 0.25, color });
+  }
+
+  partDropLine(part) {
+    if (!part) return "";
+    const rarity = PART_DROP_RARITY[part.rarity] || part.rarity || "";
+    return `${part.baseName || part.base} · ${partFamilyLabel(part.family)} · ${rarity}`;
+  }
+
+  partRollBody(kind, levelOrWave) {
+    const r = this.run;
+    if (!r?.runId) return null;
+    if (kind === "level") {
+      const lvl = levelOrWave ?? r.level;
+      const absLevel = ((r.chapterNum || 1) - 1) * LEVELS + lvl;
+      return { runId: r.runId, kind: "level", level: absLevel };
+    }
+    if (kind === "endless") {
+      const wave = levelOrWave;
+      if (!wave || wave % 5 !== 0) return null;
+      return { runId: r.runId, kind: "endless", level: ((r.chapterNum || 1) - 1) * LEVELS + r.level, wave };
+    }
+    return null;
+  }
+
+  partRollStillMatches(body) {
+    const r = this.run;
+    if (!r || r.runId !== body.runId) return false;
+    if (body.kind === "level") return body.level === ((r.chapterNum || 1) - 1) * LEVELS + r.level;
+    if (body.kind === "endless") return body.wave === r.endlessWaves;
+    return false;
+  }
+
+  applyPartRollResult(body, result) {
+    if (result?.profile) this.ui.applyProfile?.(result.profile);
+    if (!result?.part || !this.partRollStillMatches(body)) return null;
+    return this.partDropLine(result.part);
+  }
+
+  async sendPartRoll(body) {
+    rememberPendingPartRoll(body);
+    try {
+      const result = await this.rollPart(body);
+      forgetPendingPartRoll(partRollKey(body));
+      return result;
+    } catch {
+      return null;
+    }
+  }
+
+  async requestLevelPartRoll() {
+    const body = this.partRollBody("level");
+    if (!body) return;
+    try {
+      await this.noteLevelClear?.({ runId: body.runId, level: body.level });
+    } catch {
+      // The roll stays pending and notes the clear again when the link returns.
+    }
+    const result = await this.sendPartRoll(body);
+    if (!result) return;
+    const line = this.applyPartRollResult(body, result);
+    if (line) this.ui.setLevelClearPart?.(line);
+  }
+
+  async requestEndlessPartRoll(endlessWave) {
+    const body = this.partRollBody("endless", endlessWave);
+    if (!body) return null;
+    const result = await this.sendPartRoll(body);
+    if (!result) return null;
+    return this.applyPartRollResult(body, result);
+  }
+
+  advanceEndless(forced) {
+    const r = this.run;
+    if (!r?.endless || r._endlessStep) return false;
+    r._endlessStep = true;
+    r.waveTimer = 0;
+    const finishing = r.wave >= 40;
+    if (!forced) {
+      r.wavesCleared += 1;
+      const pending = this.endlessWaveCleared();
+      if (finishing) {
+        this.state = "horde";
+        this.hordeWait = pending.then(() => this.finishHorde(r), () => this.finishHorde(r));
+        return true;
+      }
+      void pending;
+    } else if (finishing) {
+      if (this.ui.toast) this.ui.toast("ВРЕМЯ ВЫШЛО");
+      this.finishHorde(r);
+      return true;
+    }
+    r.wave += 1;
+    r.wavePause = 0;
+    if (forced) this.ui.toast("ВРЕМЯ ВЫШЛО");
+    this.queueWave();
+    r._endlessStep = false;
+    return false;
+  }
+
+  finishHorde(run) {
+    if (this.run !== run || run.hordeDone) return;
+    run.hordeDone = true;
+    run.wave = Math.min(run.wave, 40);
+    run._endlessStep = false;
+    this.exitAfterLevel();
+  }
+
+  async endlessWaveCleared() {
+    const r = this.run;
+    r.endlessWaves = (r.endlessWaves || 0) + 1;
+    const absLevel = ((r.chapterNum || 1) - 1) * LEVELS + r.level;
+    const granted = Number(await this.ui.onEndlessWave?.(absLevel, r.wave, null, r.runId)) || 0;
+    r.endlessCrystals = (r.endlessCrystals || 0) + granted;
+    let partLine = null;
+    if (r.endlessWaves % 5 === 0) partLine = await this.requestEndlessPartRoll(r.endlessWaves);
+    if (partLine) {
+      r.endlessParts = r.endlessParts || [];
+      r.endlessParts.push(partLine);
+      this.ui.toast?.(partLine);
+    }
+  }
+
+  showLevelClear() {
+    const r = this.run;
+    r.levelsCleared += 1;
+    this.state = "levelclear";
+    const coins = r.coins - (r.levelCoins || 0);
+    const abs = ((r.chapterNum || 1) - 1) * LEVELS + r.level;
+    const cleared = new Set(this.profile?.clearedLevels || []);
+    let crystals = cleared.has(abs) ? 0 : 6 + Math.floor((abs - 1) / LEVELS) * 4;
+    const chapterDone = r.level >= LEVELS;
+    if (chapterDone && !cleared.has(abs)) crystals += 20 + ((r.chapterNum || 1) - 1) * 10;
+    this.audio.win();
+    this.ui.showLevelClear({
+      level: r.level,
+      chapter: r.chapterNum || 1,
+      coins,
+      crystals,
+      canNext: (r.chapterNum || 1) < CHAPTERS || r.level < LEVELS,
+      chapterDone,
+    });
+    void this.requestLevelPartRoll();
+  }
+
+  continueLevel() {
+    if (this.coop?.live && !this._coopEcho) {
+      this.sendCoop({ t: "continue" });
+      return;
+    }
+    if (this.remote) {
+      this.remoteAction = { action: "continue" };
+      return;
+    }
+    const r = this.run;
+    if (r.level >= LEVELS) {
+      r.chapterNum = (r.chapterNum || 1) + 1;
+      r.level = 1;
+    } else {
+      r.level += 1;
+    }
+    r.chapter = (r.chapterNum - 1) * LEVELS + r.level;
+    r.wave = 1;
+    r.endless = false;
+    r.power = 1;
+    r.levelCoins = r.coins;
+    this.initBuild(r);
+    r.enemies = [];
+    r.bullets = [];
+    r.bossShots = [];
+    r.spawnQueue = [];
+    r.combo = 0;
+    r.comboType = null;
+    this.state = "play";
+    this.ui.hideLevelClear();
+    this.ui.updateHud(r);
+    this.syncDrones();
+    this.queueWave();
+  }
+
+  beginEndless() {
+    if (this.coop?.live && !this._coopEcho) {
+      this.sendCoop({ t: "endless" });
+      return;
+    }
+    if (this.remote) {
+      this.remoteAction = { action: "endless" };
+      return;
+    }
+    const r = this.run;
+    r.endless = true;
+    r.endlessWaves = 0;
+    r.endlessCrystals = 0;
+    r.endlessParts = [];
+    r.hordeDone = false;
+    r.hordeCoins = 0;
+    const ruled = this.hordeDay ? hordeRuleFor(this.hordeDay).id : this.profile?.hordeRule;
+    r.hordeRule = ruled || hordeRuleFor(moscowDay()).id;
+    r.power = 1;
+    r.wave = LEVEL_WAVES + 1;
+    r.tower.hp = r.tower.maxHp;
+    r.enemies = [];
+    r.bullets = [];
+    r.bossShots = [];
+    r.spawnQueue = [];
+    this.state = "play";
+    this.ui.hideLevelClear();
+    this.ui.toast("БЕСКОНЕЧНЫЙ РЕЖИМ");
+    this.queueWave();
+  }
+
+  exitAfterLevel() {
+    if (this.coop?.live && !this._coopEcho) {
+      this.sendCoop({ t: "exit" });
+      return;
+    }
+    if (this.remote) {
+      this.remoteAction = { action: "exit" };
+      return;
+    }
+    const r = this.run;
+    const won = r.levelsCleared >= 1;
+    this.end(won, won ? "cleared" : "quit");
+  }
+
+  surrender() {
+    if (this.state !== "play" || !this.run) return;
+    if (this.coop?.live && !this._coopEcho) {
+      this.sendCoop({ t: "exit" });
+      return;
+    }
+    if (this.remote) {
+      this.remoteAction = { action: "surrender" };
+      return;
+    }
+    this.end(false, "quit");
+  }
+
+  facts() {
+    const run = this.run;
+    const startedLevel = run.startedLevel || 1;
+    const levelsCleared = Math.max(0, Math.min(MAX_LEVEL, run.levelsCleared || 0));
+    const endedLevel = Math.min(MAX_LEVEL, startedLevel + levelsCleared);
+    return {
+      runId: run.runId,
+      startedLevel,
+      kills: { ...run.kills },
+      wavesCleared: Math.min(levelsCleared * LEVEL_WAVES + LEVEL_WAVES, run.wavesCleared),
+      levelsCleared,
+      endedLevel: Math.max(startedLevel, endedLevel),
+      endedWave: Math.min(LEVEL_WAVES, Math.max(1, run.wave)),
+      won: !!run.won,
+    };
+  }
+
+  recordCollection(run) {
+    const seen = (this.meta.seen = this.meta.seen || {});
+    seen.enemies = seen.enemies || [];
+    seen.branches = seen.branches || [];
+    seen.synergies = seen.synergies || [];
+    for (const [type, n] of Object.entries(run.kills || {})) {
+      if (n > 0 && SHAPES[type] && !seen.enemies.includes(type)) seen.enemies.push(type);
+    }
+    const branches = [run.gun?.branch, run.drone?.branch];
+    for (const st of Object.values(run.wepStats || {})) if (st?.branch) branches.push(st.branch);
+    for (const b of branches) if (b && !seen.branches.includes(b)) seen.branches.push(b);
+    for (const s of activeSynergies(run)) if (!seen.synergies.includes(s.id)) seen.synergies.push(s.id);
+  }
+
+  end(win, reason) {
+    this.state = "result";
+    this.run.won = win;
+    this.reportRunEnd(reason || (win ? "cleared" : "died"));
+    const run = this.run;
+    const absLevel = ((run.chapterNum || 1) - 1) * LEVELS + run.level;
+    const progress = (absLevel - 1) * LEVEL_WAVES + run.wave;
+    this.meta.bestWave = Math.max(this.meta.bestWave, progress);
+    this.meta.bestLevel = Math.max(this.meta.bestLevel || 1, absLevel);
+    this.recordCollection(run);
+    this.ui.save();
+    const facts = this.facts();
+    rememberPending(facts);
+    this.ui.showResult(win, run, null, { pending: true });
+    this.claimFacts(facts, run);
+    win ? this.audio.win() : this.audio.lose();
+  }
+
+  async claimFacts(facts, run) {
+    if (this.coop?.live && this.coop.seat !== 0) {
+      forgetPending(facts.runId);
+      if (this.run && this.run.runId === facts.runId) this.ui.showResult(!!facts.won, run, null);
+      return;
+    }
+    if (!api?.claimRun) return;
+    try {
+      const result = await api.claimRun(facts);
+      forgetPending(facts.runId);
+      if (result.profile) this.ui.applyProfile?.(result.profile);
+      if (this.run && this.run.runId === facts.runId) this.ui.showResult(!!facts.won, run, result.granted);
+    } catch {
+      if (this.run && this.run.runId === facts.runId) this.ui.showR
