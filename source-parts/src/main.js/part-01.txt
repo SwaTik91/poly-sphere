@@ -1,0 +1,499 @@
+st kind = step.crystals ? "crystals" : step.coins ? "coins" : "dust";
+      return `<div class="account-step ${kind}${index === 0 ? " next" : ""}"><span>Ур. ${step.level}</span><b>${accountStepLabel(step)}</b></div>`;
+    })
+    .join("");
+}
+
+function furthestOpenLevel() {
+  const cleared = new Set(profile?.clearedLevels || []);
+  let level = 1;
+  while (level < FURTHEST_LEVEL && cleared.has(level)) level += 1;
+  return level;
+}
+
+function seenPartIds() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(SEEN_PARTS_KEY) || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
+function markPartsSeen() {
+  const ids = (profile?.parts || []).map((p) => p.id);
+  localStorage.setItem(SEEN_PARTS_KEY, JSON.stringify(ids));
+}
+
+function hasNewParts() {
+  const seen = seenPartIds();
+  return (profile?.parts || []).some((p) => !seen.has(p.id));
+}
+
+function updateBadges() {
+  const coins = profile?.coins || 0;
+  const crystals = profile?.crystals || 0;
+  const hangar = profile?.hangar || {};
+  const hangarReady = HANGAR_TREE.some((node) => {
+    if (!hangarUnlocked(hangar, node.id)) return false;
+    const lvl = hangar[node.id] || 0;
+    if (lvl >= hangarMax(node.id)) return false;
+    return coins >= hangarCost(node.id, lvl);
+  });
+  const owned = new Set(profile?.weapons || []);
+  const shopReady =
+    crystals >= 20 ||
+    (crystals >= 25 && (profile?.critBonus || 0) < 10) ||
+    (crystals >= 40 && SHOP_WEAPONS.some((id) => !owned.has(id))) ||
+    (crystals >= 50 && !profile?.fourthCard);
+  const tasksReady =
+    (profile?.dailies || []).some((t) => t.done && !t.claimed) ||
+    (profile?.achievements || []).some((a) => a.ready && !a.claimed);
+  const freshCount = collectionSnapshot().fresh.size;
+  toggleBadge("badge-hangar", hangarReady);
+  toggleBadge("badge-parts", hasNewParts() && activeTab !== "parts");
+  toggleBadge("badge-shop", shopReady);
+  toggleBadge("badge-tasks", tasksReady || (freshCount > 0 && activeTab !== "tasks"));
+}
+
+function toggleBadge(id, on) {
+  const el = $(id);
+  if (el) el.classList.toggle("hidden", !on);
+}
+
+function showLogin(message) {
+  hideAll();
+  setHubChrome(false);
+  $("login-error").textContent = message || "";
+  $("screen-login").classList.remove("hidden");
+}
+
+function showMenu() {
+  showTab("play");
+  retryPendingClaims(applyProfile);
+  retryPendingPartRolls(game);
+  maybePromptSave();
+}
+
+function maybePromptSave() {
+  if (!profile?.isGuest) return;
+  if (localStorage.getItem(SAVE_PROMPT_KEY)) return;
+  if (!(profile?.clearedLevels || []).length) return;
+  localStorage.setItem(SAVE_PROMPT_KEY, "1");
+  openSaveScreen();
+}
+
+function renderTasks() {
+  paintCollectionHub();
+  renderDailies();
+  renderAchievements();
+  renderLeaderboard();
+}
+
+async function renderLeaderboard() {
+  const list = $("leaderboard-list");
+  const seasonLine = $("season-line");
+  if (!list) return;
+  list.innerHTML = `<div class="sub">Загрузка…</div>`;
+  try {
+    const data = await api.leaderboard();
+    const season = data.season || {};
+    seasonLine.textContent = `Сезон ${season.label || "?"} · осталось дней: ${season.daysLeft ?? "?"}`;
+    const top = data.top || [];
+    const me = data.me;
+    const onBoard = me && top.some((row) => row.rank === me.rank);
+    let html = top
+      .map((row) => {
+        const mine = me && row.rank === me.rank ? " mine" : "";
+        return `<div class="lb-row${mine}"><span class="lb-rank">${row.rank}</span><span class="lb-name">${escapeHtml(row.name)}</span><span class="lb-wave">${row.wave}</span></div>`;
+      })
+      .join("");
+    if (me && !onBoard) {
+      html += `<div class="lb-row mine lb-sep"><span class="lb-rank">${me.rank}</span><span class="lb-name">Ты</span><span class="lb-wave">${me.wave}</span></div>`;
+    }
+    if (!html) html = `<div class="sub">Пока никто не дошёл до орды. Будь первым!</div>`;
+    list.innerHTML = html;
+  } catch {
+    list.innerHTML = `<div class="sub">Таблица недоступна без связи.</div>`;
+  }
+}
+
+function escapeHtml(text) {
+  return String(text ?? "").replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[ch]));
+}
+
+async function purchase(action, rerender) {
+  try {
+    const result = await action();
+    applyProfile(result.profile);
+    rerender?.();
+    return result;
+  } catch (error) {
+    ui.toast(error.message || "Не вышло");
+    return null;
+  }
+}
+
+function renderHangar() {
+  const coins = profile?.coins || 0;
+  const hangar = profile?.hangar || {};
+  $("hangar-coins").textContent = String(coins);
+  renderWeaponLoadout();
+  $("hangar-list").innerHTML = HANGAR_TREE.map((node) => {
+    const lvl = hangar[node.id] || 0;
+    const max = hangarMax(node.id);
+    const unlocked = hangarUnlocked(hangar, node.id);
+    const maxed = lvl >= max;
+    const cost = hangarCost(node.id, lvl);
+    const levelText = Number.isFinite(max) ? `ур. ${lvl}/${max}` : `ур. ${lvl}`;
+    let label;
+    let disabled;
+    if (!unlocked) {
+      const req = node.requires;
+      const reqNode = hangarNode(req.node);
+      label = `🔒 ${reqNode?.title || req.node} ур. ${req.level}`;
+      disabled = true;
+    } else if (maxed) {
+      label = "МАКС";
+      disabled = true;
+    } else {
+      label = String(cost);
+      disabled = coins < cost;
+    }
+    return `<div class="upgrade${unlocked ? "" : " locked"}"><div><strong>${node.title}</strong><div class="sub">${levelText} · ${node.desc}</div></div><button data-key="${node.id}" ${disabled ? "disabled" : ""}>${label}</button></div>`;
+  }).join("");
+  $("hangar-list").querySelectorAll("button[data-key]").forEach((btn) => {
+    btn.onclick = () => purchase(() => api.buyHangar(btn.dataset.key), renderHangar);
+  });
+}
+
+function weaponSlotCell(id, { locked = false } = {}) {
+  const cell = document.createElement("button");
+  cell.type = "button";
+  cell.className = "part-cell weapon-cell";
+  if (!id) {
+    cell.classList.add("empty");
+    cell.innerHTML = `<span class="cell-glyph">+</span><span class="cell-tag">Пусто</span>`;
+    return cell;
+  }
+  const glyph = FAMILY_GLYPH[id] || FAMILY_GLYPH.common;
+  cell.innerHTML = `<span class="cell-glyph" style="color:${weaponTint(id)}">${glyph}</span><span class="cell-tag">${WEAPON_INFO[id]?.name || id}</span>`;
+  if (locked) cell.classList.add("locked");
+  return cell;
+}
+
+function setWeaponLoadout(next) {
+  purchase(() => api.setWeaponLoadout(next), renderHangar);
+}
+
+function renderWeaponLoadout() {
+  const slotsEl = $("weapon-slots");
+  const invEl = $("weapon-inventory");
+  if (!slotsEl || !invEl) return;
+  const loadout = (Array.isArray(profile?.weaponLoadout) ? profile.weaponLoadout : ["gun", "drone"]).filter(Boolean);
+  const owned = new Set([...(profile?.weapons || []), "gun", "drone"]);
+  const inLoadout = new Set(loadout);
+  slotsEl.innerHTML = "";
+  for (let i = 0; i < 5; i++) {
+    const id = loadout[i] || null;
+    const locked = id === "gun";
+    const cell = weaponSlotCell(id, { locked });
+    if (id && !locked) {
+      cell.onclick = () => setWeaponLoadout(loadout.filter((w) => w !== id));
+    }
+    slotsEl.appendChild(cell);
+  }
+  invEl.innerHTML = "";
+  const arsenal = WEAPON_ORDER.filter((id) => id !== "gun" && owned.has(id));
+  if (!arsenal.length) {
+    invEl.innerHTML = `<p class="sub">Купите орудия в магазине.</p>`;
+    return;
+  }
+  for (const id of arsenal) {
+    const equipped = inLoadout.has(id);
+    const cell = weaponSlotCell(id, { locked: false });
+    if (equipped) cell.classList.add("equipped");
+    cell.onclick = () => {
+      if (equipped) {
+        setWeaponLoadout(loadout.filter((w) => w !== id));
+      } else if (loadout.length < 5) {
+        setWeaponLoadout([...loadout, id]);
+      } else {
+        ui.toast("Максимум 5 орудий");
+      }
+    };
+    invEl.appendChild(cell);
+  }
+}
+
+function partEffects(part) {
+  const polish = part?.rarity === "legendary" ? part.polish || 0 : 0;
+  return (part.affixes || [])
+    .map((affix) => {
+      const line = describeAffix(part.family, affix);
+      const split = line.indexOf(": ");
+      if (split < 0) return { name: line, value: "" };
+      return { name: line.slice(0, split), value: polishedText(line.slice(split + 2), polish) };
+    })
+    .filter((row) => row.name);
+}
+
+const NEXT_QUALITY = { common: "редкой", rare: "эпической", epic: "легендарной" };
+
+function polishPips(part) {
+  if ((part?.rarity || "") !== "legendary") return "";
+  const level = Math.max(0, Math.min(POLISH_MAX, Number(part.polish) || 0));
+  const dots = Array.from({ length: POLISH_MAX }, (_, i) => `<i class="${i < level ? "on" : ""}"></i>`).join("");
+  return `<span class="polish-pips" aria-label="Полировка ${level} из ${POLISH_MAX}">${dots}</span>`;
+}
+
+function samePartCopies(part) {
+  const loadout = new Set((profile?.loadout || []).filter(Boolean));
+  return (profile?.parts || []).filter((other) =>
+    other.id !== part.id
+    && other.base === part.base
+    && (other.rarity || "common") === (part.rarity || "common")
+    && (other.family || null) === (part.family || null)
+    && !loadout.has(other.id)
+  );
+}
+
+function rarityStars(rarity) {
+  const n = { common: 1, rare: 2, epic: 3, legendary: 4 }[rarity] || 1;
+  return `<span class="stars" aria-hidden="true">${Array.from({ length: 4 }, (_, i) => `<i class="${i < n ? "on" : ""}"></i>`).join("")}</span>`;
+}
+
+function familyIcon(family) {
+  return CARD_ICONS[family] || CARD_ICONS.general;
+}
+
+function partBlock(part) {
+  const affixLines = partEffects(part)
+    .map((row) => `<div class="part-affix"><span>${escapeHtml(row.name)}</span><b>${escapeHtml(row.value)}</b></div>`)
+    .join("");
+  const rarity = part.rarity || "common";
+  const family = part.family || "common";
+  const tint = family === "common" ? "#d7deef" : weaponTint(family);
+  const note = partNote(part.family, part.base);
+  const level = rarity === "legendary" ? Math.max(0, Math.min(POLISH_MAX, Number(part.polish) || 0)) : 0;
+  const polish = rarity === "legendary" ? `<p class="polish-line">Полировка ${level}/${POLISH_MAX}</p>` : "";
+  return `<div class="loot-hero"><span class="loot-rarity rarity-${rarity}">${escapeHtml(PART_RARITY_LABELS[rarity] || rarity)}</span><span class="loot-ico" style="color:${tint}">${familyIcon(family)}</span>${rarityStars(rarity)}${polishPips(part)}<strong>${escapeHtml(part.baseName || part.base)}</strong><span class="loot-family-name" style="color:${tint}">${escapeHtml(partFamilyLabel(family))}</span></div>${affixLines}${polish}${note ? `<p class="part-note">${escapeHtml(note)}</p>` : ""}`;
+}
+
+const BRANCH_LABELS = {
+  queue: "Очередь", volley: "Залп", ricochet: "Рикошет",
+  cage: "Ступор", storm: "Разряд", dome: "Купол",
+  wedge: "Клин", cassette: "Кассета", crater: "Кратер",
+  wave: "Вал", sheaf: "Сноп", bunch: "Гроздь",
+  cut: "Резак", prism: "Призма", mirror: "Зеркало",
+  flock: "Стая", bomb: "Бомбы", hunt: "Охота",
+  blade: "Серп", ward: "Барьер", lunge: "Выпад",
+};
+const WEAPON_ORDER = ["gun", "laser", "scatter", "grenade", "emp", "orb", "drone"];
+
+function runWeaponEntries(run) {
+  const weapons = run.weapons || {};
+  const entries = [];
+  for (const id of WEAPON_ORDER) {
+    if (id !== "gun" && id !== "drone" && !weapons[id]) continue;
+    const stats = id === "gun" ? run.gun : id === "drone" ? run.drone : run.wepStats?.[id];
+    if (!stats) continue;
+    entries.push({ id, level: (run.pips?.[id] || []).length, branch: stats.branch || null });
+  }
+  return entries;
+}
+
+function cardsByWeaponLabel(run) {
+  const groups = {};
+  for (const c of run.takenCards || []) {
+    const key = c.weapon || "Общая карта";
+    (groups[key] = groups[key] || []).push(c.title);
+  }
+  return groups;
+}
+
+function equippedParts() {
+  const loadout = new Set((profile?.loadout || []).filter(Boolean));
+  return (profile?.parts || []).filter((p) => loadout.has(p.id));
+}
+
+function renderBuild() {
+  const run = game.run;
+  if (!run) return;
+  const g = run.gun || {};
+  const drive = run.overdrive || {};
+  const critPct = Math.round((run.crit?.chance || 0) * 100);
+  const hp = Math.max(0, Math.round(run.tower?.hp || 0));
+  const maxHp = Math.round(run.tower?.maxHp || 0);
+  const driveHot = drive.left > 0;
+  const drivePct = drive.max ? Math.round((drive.charge / drive.max) * 100) : 0;
+  $("build-summary").innerHTML = `
+    <div><span>Урон пулемёта</span><b>${Math.round(g.dmg || 0)}</b></div>
+    <div><span>Крит</span><b>${critPct}%</b></div>
+    <div><span>HP ядра</span><b>${hp}/${maxHp}</b></div>
+    <div><span>Овердрайв</span><b>${driveHot ? "активен" : `${drivePct}%`}</b></div>`;
+  const groups = cardsByWeaponLabel(run);
+  const dmgBy = run.dmgByWeapon || {};
+  $("build-weapons").innerHTML = runWeaponEntries(run)
+    .map((e) => {
+      const label = weaponLabel(e.id);
+      const branch = e.branch ? ` · ${BRANCH_LABELS[e.branch] || e.branch}` : "";
+      const cards = (groups[label] || []).join(", ");
+      const dmg = Math.round(dmgBy[e.id] || 0);
+      return `<div class="build-weapon"><div class="build-weapon-head"><b style="color:${weaponColor(e.id)}">${label}</b><span>ур. ${e.level}${branch}</span></div><div class="build-weapon-dmg"><span>Нанесено урона</span><b>${dmg.toLocaleString("ru-RU")}</b></div>${cards ? `<p>${cards}</p>` : ""}</div>`;
+    })
+    .join("");
+  const general = groups["Общая карта"] || [];
+  const syns = activeSynergies(run);
+  $("build-synergies").innerHTML = syns.length
+    ? `<b>Синергии</b>${syns
+        .map((s) => `<div class="build-syn"><b>${s.name}</b><span>${s.desc}</span></div>`)
+        .join("")}`
+    : "";
+  const parts = equippedParts();
+  const partHtml = parts.length
+    ? parts.map((p) => `<span class="build-part rarity-${p.rarity || "common"}">${p.baseName || p.base} · ${partFamilyLabel(p.family)}</span>`).join("")
+    : '<span class="sub">Нет надетых запчастей</span>';
+  const sets = activeSets(profile?.parts || [], profile?.loadout || []);
+  const setHtml = sets.length
+    ? `<div class="build-sets"><b>Сеты</b>${sets.map((s) => `<div class="build-syn"><b>${partFamilyLabel(s.family)} ×${s.count}</b><span>${s.desc}</span></div>`).join("")}</div>`
+    : "";
+  $("build-parts").innerHTML = `${general.length ? `<div class="build-general"><b>Общие карты</b><p>${general.join(", ")}</p></div>` : ""}${setHtml}<div class="build-parts-list"><b>Запчасти</b><div>${partHtml}</div></div>`;
+}
+
+function openBuild() {
+  if (!game.run || game.state !== "play") return;
+  game.paused = true;
+  renderBuild();
+  $("build-overlay").classList.remove("hidden");
+}
+
+function closeBuild() {
+  $("build-overlay").classList.add("hidden");
+  if (game.state === "play") game.paused = false;
+}
+
+function renderReport(run) {
+  const box = $("result-report");
+  if (!box) return;
+  const shares = damageShares(run.dmgByWeapon || {});
+  const rows = Object.entries(shares).sort((a, b) => b[1] - a[1]);
+  const kills = run.kills && typeof run.kills === "object"
+    ? Object.values(run.kills).reduce((sum, n) => sum + Number(n || 0), 0)
+    : run.kills || 0;
+  const dur = Math.round((performance.now() - (run._startedAt || performance.now())) / 1000);
+  const durText = dur >= 60 ? `${Math.floor(dur / 60)} мин ${dur % 60} с` : `${dur} с`;
+  const bars = rows.length
+    ? rows
+        .map(([tag, share]) => {
+          const pct = Math.round(share * 100);
+          return `<div class="report-bar"><div class="report-bar-head"><span style="color:${weaponColor(tag)}">${weaponLabel(tag)}</span><b>${pct}%</b></div><div class="report-track"><i style="width:${pct}%;background:${weaponColor(tag)}"></i></div></div>`;
+        })
+        .join("")
+    : '<p class="sub">Урон не зафиксирован</p>';
+  const weakest = rows.length > 1 ? weaponLabel(rows[rows.length - 1][0]) : null;
+  const cards = (run.takenCards || []).map((c) => c.title);
+  box.innerHTML = `
+    <h3>Отчёт по бою</h3>
+    <div class="report-meta">
+      <div><span>Убито</span><b>${kills}</b></div>
+      <div><span>Время</span><b>${durText}</b></div>
+      <div><span>Уровень</span><b>${(run.chapterNum || 1) > 1 ? `Гл.${run.chapterNum}·${run.level}` : run.level}</b></div>
+      <div><span>Волна</span><b>${run.wave}</b></div>
+    </div>
+    <div class="report-bars">${bars}</div>
+    ${weakest ? `<p class="report-weak">Слабое звено: <b>${weakest}</b></p>` : ""}
+    ${cards.length ? `<div class="report-cards"><b>Карты забега</b><p>${cards.join(", ")}</p></div>` : ""}`;
+  box.classList.remove("hidden");
+}
+
+function renderParts() {
+  const dustLine = $("parts-dust");
+  if (dustLine) dustLine.textContent = `Пыль: ${profile?.dust || 0}`;
+  const parts = profile?.parts || [];
+  const loadout = profile?.loadout?.length === 8 ? profile.loadout : Array(8).fill(null);
+  const byId = new Map(parts.map((p) => [p.id, p]));
+  const equipped = new Set(loadout.filter(Boolean));
+  closePartPopup();
+
+  const buildSlots = (indices, host) => {
+    host.innerHTML = "";
+    for (const index of indices) {
+      const id = loadout[index];
+      const part = id ? byId.get(id) : null;
+      host.appendChild(partCard(part, { equipped: true, slot: index }));
+    }
+  };
+  buildSlots([0, 1, 2, 3], $("parts-slots-weapon"));
+  buildSlots([4, 5, 6, 7], $("parts-slots-common"));
+
+  const sets = activeSets(parts, loadout);
+  $("parts-sets").innerHTML = sets.length
+    ? `<p class="sub part-group">Активные сеты</p>${sets
+        .map(
+          (s) =>
+            `<div class="set-row"><b>${partFamilyLabel(s.family)} ×${s.count}</b><span>${s.desc}</span></div>`,
+        )
+        .join("")}`
+    : "";
+
+  const stash = parts
+    .filter((p) => !equipped.has(p.id))
+    .sort((a, b) => {
+      const fa = STASH_FAMILY_ORDER.indexOf(a.family || "common");
+      const fb = STASH_FAMILY_ORDER.indexOf(b.family || "common");
+      if (fa !== fb) return (fa < 0 ? 99 : fa) - (fb < 0 ? 99 : fb);
+      const ra = STASH_RARITY_ORDER.indexOf(a.rarity || "common");
+      const rb = STASH_RARITY_ORDER.indexOf(b.rarity || "common");
+      if (ra !== rb) return ra - rb;
+      return String(a.baseName || a.base || "").localeCompare(String(b.baseName || b.base || ""), "ru");
+    });
+  const title = $("parts-stash-title");
+  if (title) title.textContent = stash.length ? `Склад · ${stash.length}` : "Склад";
+  const list = $("parts-list");
+  list.innerHTML = "";
+  if (!stash.length) {
+    list.innerHTML = '<p class="sub part-empty">Склад пуст. Запчасти падают с уровней и из сундуков.</p>';
+    return;
+  }
+  let lastFamily = null;
+  let grid = null;
+  for (const part of stash) {
+    const family = part.family || "common";
+    if (family !== lastFamily) {
+      const head = document.createElement("p");
+      head.className = "loot-family";
+      head.style.color = family === "common" ? "var(--muted)" : weaponTint(family);
+      head.textContent = partFamilyLabel(family);
+      list.appendChild(head);
+      grid = document.createElement("div");
+      grid.className = "loot-grid";
+      list.appendChild(grid);
+      lastFamily = family;
+    }
+    grid.appendChild(partCard(part, { equipped: false, stash: true }));
+  }
+}
+
+const FAMILY_GLYPH = {
+  gun: "≡",
+  drone: "✜",
+  laser: "↯",
+  scatter: "⁘",
+  grenade: "✸",
+  emp: "◎",
+  orb: "◍",
+  common: "◆",
+};
+
+function equipPlan(part) {
+  const loadout = profile?.loadout?.length === 8 ? profile.loadout : Array(8).fill(null);
+  const byId = new Map((profile?.parts || []).map((p) => [p.id, p]));
+  for (const id of loadout) {
+    const worn = id ? byId.get(id) : null;
+    if (worn && worn.base === part.base) return { block: "Так
