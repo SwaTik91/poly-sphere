@@ -1,0 +1,18 @@
+[
+  {
+    "path": "source-parts/art-packed/public__gatling.png.b64/part-02.txt",
+    "size": 20000,
+    "chunks": [
+      "_slicebuild/gatling-part-02/00.txt",
+      "_slicebuild/gatling-part-02/01.txt",
+      "_slicebuild/gatling-part-02/02.txt",
+      "_slicebuild/gatling-part-02/03.txt",
+      "_slicebuild/gatling-part-02/04.txt",
+      "_slicebuild/gatling-part-02/05.txt",
+      "_slicebuild/gatling-part-02/06.txt",
+      "_slicebuild/gatling-part-02/07.txt",
+      "_slicebuild/gatling-part-02/08.txt",
+      "_slicebuild/gatling-part-02/09.txt"
+    ]
+  }
+]
