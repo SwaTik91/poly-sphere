@@ -1,0 +1,617 @@
+ed) {
+    let best = null;
+    let bestD = 1e9;
+    for (const e of this.run.enemies) {
+      if (e.dead || (pred && !pred(e))) continue;
+      const d = dist(from, e);
+      if (d < bestD) {
+        bestD = d;
+        best = e;
+      }
+    }
+    return best;
+  }
+
+  // Цель держится, пока не умрёт или не уйдёт далеко. Иначе у ядра прицел
+  // прыгает между врагами на одном расстоянии и пули летят мимо.
+  stickyTarget(holder, from = holder) {
+    const cur = holder.target;
+    if (cur && !cur.dead && this.run.enemies.includes(cur) && dist(from, cur) < 560) return cur;
+    holder.target = this.nearest(from);
+    return holder.target;
+  }
+
+  densest() {
+    let best = null;
+    let score = -1;
+    for (const e of this.run.enemies) {
+      if (e.dead) continue;
+      let s = 0;
+      for (const o of this.run.enemies) {
+        if (!o.dead && dist(e, o) < 110) s++;
+      }
+      if (s > score) {
+        score = s;
+        best = e;
+      }
+    }
+    return best;
+  }
+
+  tagDamage(tag, amount) {
+    if (!tag || !(amount > 0) || !this.run) return;
+    const by = this.run.dmgByWeapon || (this.run.dmgByWeapon = {});
+    by[tag] = (by[tag] || 0) + amount;
+  }
+
+  damage(e, amt, src, canCrit = true, forcedCrit = false, tag = null) {
+    if (e.dead) return false;
+    if (e.boss && e.bossId === "crown" && this.crownGuarded(e)) {
+      this.spark(e.x, e.y, "#34d399", 5);
+      return false;
+    }
+    if (tag !== "resonance") amt *= this.run?.might || 1;
+    let crit = false;
+    if (canCrit && this.run.crit && (forcedCrit || this.rand() < this.run.crit.chance)) {
+      amt *= this.run.crit.mul;
+      crit = true;
+    }
+    if (e.shield > 0) {
+      const use = Math.min(e.shield, amt);
+      e.shield -= use;
+      amt -= use;
+    }
+    if (amt <= 0) {
+      this.spark(e.x, e.y, "#34d399", 4);
+      return crit;
+    }
+    const dealt = amt;
+    this.tagDamage(tag, dealt);
+    e.hp -= dealt;
+    if (crit) {
+      this.spark(e.x, e.y, "#ffe08a", 10);
+      this.floatDamage(e.x, e.y, dealt, true);
+      this.audio.crit();
+    } else {
+      this.spark(e.x, e.y, src || e.color, 5);
+      this.floatDamage(e.x, e.y, dealt, false);
+    }
+    if (e.hp <= 0) this.kill(e);
+    return crit;
+  }
+
+  contactDamage(e, amt, src, tag) {
+    const c = this.run.crit;
+    const mul = c ? 1 + (c.chance || 0) * ((c.mul || 2) - 1) : 1;
+    return this.damage(e, amt * mul, src, false, false, tag);
+  }
+
+  floatDamage(x, y, amount, crit) {
+    if (this.meta.showDamage === false) return;
+    const n = Math.max(1, Math.round(amount));
+    this.run.fx.push({
+      kind: "text",
+      x: x + (Math.random() - 0.5) * 26,
+      y: y - 16,
+      vy: -62,
+      life: 0.55,
+      color: crit ? "#ffe08a" : "#f4f7ff",
+      text: crit ? `${n}!` : String(n),
+      size: crit ? 22 : 16,
+    });
+  }
+
+  kill(e) {
+    if (e.dead) return;
+    e.dead = true;
+    const bucket = e.fromSplit ? "split" : e.type;
+    if (this.run.kills[bucket] === undefined) this.run.kills.split += 1;
+    else this.run.kills[bucket] += 1;
+    this.run.coins += e.coins;
+    const gained = Math.max(1, Math.round((e.xp || 1) * waveXpMul(this.run.wave) * (this.run.xpMul || 1) * (this.profile?.tester ? OFFER_XP_MULT : 1)));
+    this.run.xp += gained;
+    if (this.run.leech) this.run.tower.hp = Math.min(this.run.tower.maxHp, this.run.tower.hp + this.run.leech);
+    this.gainOfferXp(gained);
+    this.audio.hit();
+    this.burst(e.x, e.y, e.color, e.boss ? 28 : 12);
+    this.shake = Math.max(this.shake, e.boss ? 10 : 3);
+
+    if (e.split) {
+      for (let i = 0; i < e.split; i++) {
+        this.spawnEnemy(
+          { type: "circle", hp: e.maxHp * 0.28, speed: 78, dmg: 5, r: 11, color: "#e9d5ff", xp: 3, coins: 1 },
+          true,
+          e,
+        );
+      }
+    }
+
+    if (e.burstOnDeath) {
+      this.run.fx.push({ kind: "ring", x: e.x, y: e.y, r: 12, max: 170, life: 0.42, color: "#ffe08a" });
+      for (let i = 0; i < 2; i++) {
+        this.spawnEnemy(
+          { type: "circle", hp: e.maxHp * 0.12, speed: 120, dmg: e.dmg * 0.5, r: 11, color: "#fde68a", xp: 2, coins: 1 },
+          true,
+          e,
+        );
+      }
+      this.shake = Math.max(this.shake, 6);
+    }
+
+    if (this.run.comboType === e.type) this.run.combo += 1;
+    else {
+      this.run.comboType = e.type;
+      this.run.combo = 1;
+    }
+    this.run.comboFlash = 1.4;
+    this.ui.setCombo(this.run);
+    if (this.run.combo >= this.run.comboNeed) {
+      this.prismBurst(e.x, e.y);
+      this.run.combo = 0;
+      this.run.comboType = null;
+      this.ui.toast("РЕЗОНАНС ФОРМ");
+    }
+
+    this.ui.updateHud(this.run);
+  }
+
+  gainOfferXp(amount) {
+    const offer = this.run?.offer;
+    if (!offer) return;
+    offer.xp += amount;
+    while (offer.xp >= offer.next && offer.next > 0 && this.state === "play") {
+      offer.xp -= offer.next;
+      offer.level += 1;
+      offer.next = gunXpToNext(offer.level);
+      const burst = this.run.nextOffers || 0;
+      this.run.nextOffers = 0;
+      this.run.offerBurst = burst > 1 ? burst : 1;
+      this.run.offerChain = burst > 1 ? burst - 1 : 0;
+      const cards = rollBattleOffer(this.run, this.run.offerCount || 3, this.rand);
+      this.run._cards = cards;
+      this.state = "cards";
+      this.ui.showCards(cards, {
+        title: "УСИЛЕНИЕ",
+        sub: this.offerSub(),
+      });
+      break;
+    }
+  }
+
+  prismBurst(x, y) {
+    this.audio.boom();
+    this.burst(x, y, "#c084fc", 26);
+    for (const e of this.run.enemies) {
+      if (!e.dead && dist(e, { x, y }) < RESONANCE_RADIUS) {
+        this.damage(e, RESONANCE_DMG + this.run.wave * RESONANCE_DMG_PER_WAVE, "#c084fc", true, false, "resonance");
+      }
+    }
+    this.shake = 8;
+  }
+
+  refreshSynergies() {
+    if (!this.run) return;
+    this.run.syn = synergyFlags(this.run);
+  }
+
+  applyCard(card) {
+    if (this.coop?.live && !this._coopEcho) {
+      this.sendCoop({ t: "pick", id: card.id });
+      return;
+    }
+    if (this.remote) {
+      this.remoteAction = { action: "pick", cardId: card.id };
+      return;
+    }
+    const owner = Object.entries(WEAPON_INFO).find(([, info]) => info.name === card.who);
+    if (owner && !card.unlock && !card.milestone) {
+      const key = owner[0];
+      const next = weaponMilestone((this.run.pips[key] || []).length);
+      if (next) {
+        const cards = legendaryOffer(this.run, key).map((item) => ({ ...item, milestone: true }));
+        const open = cards.length
+          ? cards
+          : rollBattleOffer(this.run, this.run.offerCount || 3, this.rand).map((item) => ({ ...item, milestone: true }));
+        this.state = "cards";
+        this.run._cards = open;
+        this.ui.showCards(open, {
+          title: `${card.who} · ${next}`,
+          sub: cards.length
+            ? "Каждое 5-е улучшение этого оружия — легендарка"
+            : "Особые карты этой ветки уже в общем выборе. Вот три усиления.",
+          reroll: false,
+        });
+        return;
+      }
+    }
+    card.apply(this.run);
+    applyBranchParts(this.run);
+    if (owner && !card.unlock) {
+      const key = owner[0];
+      this.run.pips[key] = this.run.pips[key] || [];
+      this.run.pips[key].push(card.rarity === "legendary" ? "legendary" : "normal");
+    }
+    if (this.run) {
+      this.run.takenCards = this.run.takenCards || [];
+      this.run.takenCards.push({ title: card.title, weapon: card.who || null });
+      if (card.milestone || card.rarity === "legendary") {
+        this.run.takenLegendaries = this.run.takenLegendaries || [];
+        this.run.takenLegendaries.push(card.title);
+      }
+    }
+    this.refreshSynergies();
+    this.ui.toast(card.title);
+    this.audio.pickup();
+    this.syncDrones();
+    if ((this.run.offerChain || 0) > 0) {
+      this.run.offerChain -= 1;
+      const cards = rollBattleOffer(this.run, this.run.offerCount || 3, this.rand);
+      this.run._cards = cards;
+      this.state = "cards";
+      this.ui.showCards(cards, { title: "УСИЛЕНИЕ", sub: this.offerSub() });
+      this.ui.updateHud(this.run);
+      return;
+    }
+    this.state = "play";
+    this.ui.hideCards();
+    this.ui.updateHud(this.run);
+    this.gainOfferXp(0);
+  }
+
+  offerSub() {
+    const total = this.run.offerBurst || 1;
+    if (total <= 1) return "Одно усиление: оружие или общая карта";
+    const index = total - (this.run.offerChain || 0);
+    return `Черёд: выбор ${index} из ${total}`;
+  }
+
+  rerollOffer(used = 0) {
+    const cards = rollBattleOffer(this.run, this.run.offerCount || 3, this.rand);
+    this.run._cards = cards;
+    this.ui.showCards(cards, null, used);
+    this.audio.pickup();
+  }
+
+  async rerollCards() {
+    if (this.coop?.live && !this._coopEcho) {
+      const result = await api.buyReroll(this.run.runId, this.run.offer?.level || 1);
+      if (result.profile) this.ui.applyProfile?.(result.profile);
+      this.sendCoop({ t: "reroll", used: result.used || 0 });
+      return;
+    }
+    if (this.remote) {
+      this.remoteAction = { action: "reroll" };
+      return;
+    }
+    const result = await api.buyReroll(this.run.runId, this.run.offer.level);
+    if (result.profile) this.ui.applyProfile?.(result.profile);
+    const cards = rollBattleOffer(this.run, this.run.offerCount || 3, this.rand);
+    this.run._cards = cards;
+    this.ui.showCards(cards, null, result.used);
+    this.audio.pickup();
+  }
+
+  syncDrones() {
+    const need = this.run.drone?.count || this.run.wepStats.drone?.count || 0;
+    while (this.run.drones.length < need) {
+      const i = this.run.drones.length;
+      const a = (i / Math.max(need, 1)) * Math.PI * 2 - Math.PI / 2;
+      this.run.drones.push({
+        x: this.run.tower.x + Math.cos(a) * 120,
+        y: this.run.tower.y + Math.sin(a) * 120,
+        orbit: a,
+        cd: i * 0.08,
+      });
+    }
+  }
+
+  fireGun(from) {
+    const g = this.run.gun;
+    const origin = from || this.run.tower;
+    const over = this.run.overdrive.left > 0;
+    const dmg = g.dmg * (over ? this.run.overdrive.mul : 1);
+    const shot = rollGunShot(g);
+    const a = from?.angle ?? g.angle;
+    const spd = (g.speed || 680) * (over ? 1.15 : 1);
+    const gap = g.gap || 12;
+    const sideX = -Math.sin(a);
+    const sideY = Math.cos(a);
+    for (let i = 0; i < g.pellets; i++) {
+      const off = (i - (g.pellets - 1) / 2) * gap;
+      const ang = pelletAngle(a, i, g.pellets, g.spread || 0);
+      this.run.bullets.push({
+        x: origin.x + Math.cos(a) * 38 + sideX * off,
+        y: origin.y + Math.sin(a) * 38 + sideY * off,
+        id: (this._bid = (this._bid || 0) + 1),
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd,
+        dmg,
+        r: over ? 6.2 : g.bounces > 0 ? 4.6 : g.pierce > 0 ? 5.4 : 3.2,
+        pierce: g.pierce,
+        falloff: g.falloff || 0,
+        canBounce: g.bounces > 0,
+        bounces: g.bounces,
+        edgeMul: g.edgeMul || 1,
+        swarm: swarmPower(g.swarm),
+        swarmBoth: !!g.swarmBoth,
+        returnHome: !!g.returnHome,
+        guaranteedCrit: shot.guaranteedCrit,
+        canChain: shot.canChain,
+        life: g.life || 1.15,
+        knock: g.knock || 0,
+        color: over ? "#fff1b8" : "#7ee8ff",
+        kind: "gun",
+        tag: "gun",
+        hit: new Set(),
+      });
+    }
+    const gain = OVERDRIVE.shotGain * (this.run.overdrive.chargeRate || 1) * (1 + (this.run.overdrive.chargeGain || 0));
+    if (this.run.overdrive.left <= 0) this.run.overdrive.charge += gain;
+    if (this.run.overdrive.charge >= this.run.overdrive.max) {
+      this.run.overdrive.charge = 0;
+      this.run.overdrive.left = this.run.overdrive.dur;
+      this.audio.overdrive();
+      this.ui.toast("ОВЕРДРАЙВ");
+    }
+    this.audio.shoot();
+  }
+
+  turnHome(b) {
+    const tw = this.run.tower;
+    if (!tw) return;
+    const dx = tw.x - b.x;
+    const dy = tw.y - b.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const sp = Math.hypot(b.vx, b.vy) || 1;
+    b.vx = (dx / len) * sp;
+    b.vy = (dy / len) * sp;
+  }
+
+  guideBullet(b, bounce, dt) {
+    if (bounce && !bounce.died && b.returnHome) {
+      b.returning = true;
+      this.turnHome(b);
+      return;
+    }
+    if (b.edged && !b.returning && b.life > 0 && b.kind === "gun") this.steerBounce(b, dt);
+  }
+
+  steerBounce(b, dt) {
+    let best = null;
+    let bestD = 460 * 460;
+    for (const e of this.run.enemies) {
+      if (e.dead || b.hit.has(e)) continue;
+      const dx = e.x - b.x;
+      const dy = e.y - b.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestD) {
+        best = e;
+        bestD = d2;
+      }
+    }
+    if (!best) return;
+    const sp = Math.hypot(b.vx, b.vy) || 1;
+    const dx = best.x - b.x;
+    const dy = best.y - b.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const turn = Math.min(0.45, 2.6 * dt);
+    const nx = (b.vx / sp) * (1 - turn) + (dx / len) * turn;
+    const ny = (b.vy / sp) * (1 - turn) + (dy / len) * turn;
+    const nlen = Math.hypot(nx, ny) || 1;
+    b.vx = (nx / nlen) * sp;
+    b.vy = (ny / nlen) * sp;
+  }
+
+  spawnSwarm(b) {
+    const sp = Math.hypot(b.vx, b.vy) || 1;
+    const nx = -b.vy / sp;
+    const ny = b.vx / sp;
+    const signs = b.swarmBoth ? [1, -1] : [b.swarmSide || 1];
+    if (!b.swarmBoth) b.swarmSide = -(b.swarmSide || 1);
+    for (const sign of signs) {
+      this.run.bullets.push({
+        x: b.x + nx * sign * 12,
+        y: b.y + ny * sign * 12,
+        vx: nx * sign * 480,
+        vy: ny * sign * 480,
+        dmg: b.dmg * swarmPower(b.swarm),
+        r: 3,
+        pierce: 0,
+        falloff: 0,
+        canBounce: false,
+        life: 0.35,
+        color: "#d7f7ff",
+        kind: "gun",
+        tag: "gun",
+        hit: new Set(),
+      });
+    }
+  }
+
+  fireLaser() {
+    const s = this.run.wepStats.laser;
+    const tw = this.run.tower;
+    const target = this.nearest(tw, (e) => e.hp > e.maxHp * 0.3) || this.nearest(tw);
+    if (!target && !s.spin) return;
+    const base = s.spin ? s.spinAngle || 0 : angTo(tw, target);
+    const n = Math.max(1, s.rays || 1);
+    const gap = s.spread || 0.28;
+    for (let i = 0; i < n; i++) {
+      const off = Math.abs(i - (n - 1) / 2);
+      const edge = n > 1 ? off / ((n - 1) / 2) : 0;
+      this.castLaser(base + (i - (n - 1) / 2) * gap, s.dmg, s.width, s.bounces || 0, 1 - edge * 0.55);
+    }
+  }
+
+  castLaser(angle, dmg, width, bounces, dim = 1) {
+    const s = this.run.wepStats.laser;
+    const tw = this.run.tower;
+    let x = tw.x;
+    let y = tw.y;
+    let a = angle;
+    let power = dmg;
+    const seen = new Set();
+    let last = { x, y };
+    for (let hop = 0; hop <= bounces; hop++) {
+      const end = rayEnd(x, y, a, this.worldW, this.worldH);
+      this.paintBeam(x, y, end.x, end.y, width, Math.max(s.hold || 0, 0.12), power, dim);
+      const along = this.run.enemies
+        .filter((e) => !e.dead && !seen.has(e) && pointLine(e.x, e.y, x, y, end.x, end.y) < width + e.r)
+        .sort((p, q) => dist({ x, y }, p) - dist({ x, y }, q));
+      along.forEach((e, i) => {
+        seen.add(e);
+        this.damage(e, power, "#60a5fa", true, false, "laser");
+        if (s.execute && !e.dead && e.hp / e.maxHp <= s.execute) this.damage(e, e.hp + 1, "#60a5fa", false, false, "laser");
+        if (s.burn) this.ignite(e, power * s.burn, "laser");
+        if (s.burn && s.burnSpread && along[i + 1]) this.ignite(along[i + 1], power * s.burn, "laser");
+      });
+      last = end;
+      if (hop === bounces) break;
+      if (s.spark || s.shards) this.sideBeam(end.x, end.y, a + Math.PI / 2, power * 0.8, width, s.shards, dim);
+      const fall = s.steady ? 1 : 0.75;
+      power *= fall * (s.edgeMul || 1);
+      a = reflectAngle(a, end.axis);
+      const nx = Math.cos(a);
+      const ny = Math.sin(a);
+      x = end.x + nx * 2;
+      y = end.y + ny * 2;
+    }
+    if (s.boomerang) this.paintAndHit(last.x, last.y, tw.x, tw.y, width, power, seen, dim * 0.65);
+  }
+
+  sideBeam(x, y, angle, dmg, width, both, dim = 1) {
+    const reach = 220;
+    const ends = both ? [angle, angle + Math.PI] : [angle];
+    for (const a of ends) {
+      const x2 = x + Math.cos(a) * reach;
+      const y2 = y + Math.sin(a) * reach;
+      this.paintAndHit(x, y, x2, y2, width, dmg, new Set(), dim * 0.75);
+    }
+  }
+
+  paintAndHit(x1, y1, x2, y2, width, dmg, seen, dim = 0.7) {
+    this.paintBeam(x1, y1, x2, y2, width, 0.12, dmg, dim);
+    for (const e of this.run.enemies) {
+      if (e.dead || seen.has(e)) continue;
+      if (pointLine(e.x, e.y, x1, y1, x2, y2) < width + e.r) {
+        seen.add(e);
+        this.damage(e, dmg, "#60a5fa", true, false, "laser");
+      }
+    }
+  }
+
+  paintBeam(x1, y1, x2, y2, width, life, dps, dim = 1) {
+    const flash = Math.max(0.2, Math.min(life, 0.62));
+    this.run.fx.push({
+      kind: "beam",
+      x1, y1, x2, y2,
+      life: flash,
+      maxLife: flash,
+      color: "#7dd3fc",
+      w: width,
+      tag: "laser",
+      dim,
+    });
+    if (life > 0.2) {
+      this.run.beams.push({
+        x1, y1, x2, y2,
+        life,
+        w: width,
+        dps,
+        tick: 0,
+        tag: "laser",
+      });
+    }
+  }
+
+  ignite(e, dps, tag = "laser") {
+    e.burn = Math.max(e.burn || 0, 1);
+    if (!e.burnDps || dps >= e.burnDps) e.burnTag = tag;
+    e.burnDps = Math.max(e.burnDps || 0, dps);
+  }
+
+  fireScatter() {
+    const s = this.run.wepStats.scatter;
+    const first = this.nearest(this.run.tower);
+    if (!first) return;
+    const targets = [first];
+    if (s.fork) {
+      const second = this.nearest(this.run.tower, (e) => e !== first);
+      if (second) targets.push(second);
+    }
+    for (const t of targets) this.scatterVolley(s, t);
+    if (s.volley) {
+      s.pending = 1;
+      s.pendingIn = 0.14;
+    }
+  }
+
+  scatterVolley(s, t) {
+    const base = angTo(this.run.tower, t);
+    const gap = s.gap || 0.09;
+    const mid = (s.n - 1) / 2;
+    for (let i = 0; i < s.n; i++) {
+      const center = Math.abs(i - mid) < 0.6;
+      const a = base + (i - mid) * gap;
+      let dmg = s.dmg;
+      if (s.center && center) dmg = s.dmg * s.n * (s.centerMul || 1);
+      else if (s.rim) dmg *= 2;
+      this.run.bullets.push({
+        x: this.run.tower.x,
+        y: this.run.tower.y,
+        vx: Math.cos(a) * 760,
+        vy: Math.sin(a) * 760,
+        dmg,
+        r: center && s.center ? 6 : 3,
+        pierce: center && s.steady ? 12 : s.pierce || 0,
+        falloff: center && s.steady ? 1 : 0,
+        knock: s.knock,
+        life: !center && s.far ? 1.7 : 0.85,
+        color: "#fbbf24",
+        kind: "pellet",
+        tag: "scatter",
+        bog: !!s.bog,
+        cordon: !!s.cordon,
+        cluster: !!s.cluster,
+        shards: s.shards || 0,
+        shardMul: s.shardMul || 0.45,
+        shardLife: s.shardLife || 0.16,
+        echo: !!s.echo,
+        avalanche: !!s.avalanche,
+        shardPierce: s.shardPierce || 0,
+        hit: new Set(),
+      });
+    }
+  }
+
+  updateOrbs(dt, tw) {
+    const o = this.run.wepStats.orb;
+    const r = this.run;
+    r.orbAngle += o.spin * dt;
+    if (o.branch === "ward") {
+      const cd = (o.guardCd || 4) * (r.syn?.wardRush ? 0.5 : 1);
+      o.guardT = (o.guardT ?? cd) - dt;
+      if ((o.guard || 0) < (o.guardMax || 1) && o.guardT <= 0) {
+        o.guard = (o.guard || 0) + 1;
+        o.guardT = cd;
+      }
+    }
+    if (o.lunge) {
+      o.lungeT = (o.lungeT || 0) - dt;
+      if (o.lungeT <= 0) {
+        o.lungeT = o.lungeCd || 1.3;
+        const pack = o.salvo ? this.densest() : null;
+        o.fly = [];
+        for (let i = 0; i < o.count; i++) {
+          const home = this.orbHome(o, i, tw);
+          const target = pack || this.nearest(home);
+          if (!target) continue;
+          o.fly.push({ i, x: home.x, y: home.y, tx: target.x, ty: target.y, hit: false, back: false, anchor: null, hook: !!o.hook });
+        }
+      }
+    }
+    const spots = [];
+    for (let i = 0; i < o.count; i++) {
+      const home = this.orbHome(o, i, tw);
+      const fly = (o.fly || []).find((f) => f.i === i && !f.done);
+     
