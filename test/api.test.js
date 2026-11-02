@@ -1,0 +1,220 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createApi, newId } from "../src/api.js";
+
+test("newId works when the page cannot use randomUUID", () => {
+  const id = newId({
+    randomUUID() {
+      throw new Error("insecure");
+    },
+    getRandomValues(bytes) {
+      bytes.fill(7);
+    },
+  });
+  assert.equal(id, "07070707-0707-4707-8707-070707070707");
+});
+
+test("login stores the token and me sends it", async () => {
+  const saved = {};
+  const calls = [];
+  const api = createApi({
+    base: "http://api.test",
+    storage: {
+      getItem: (key) => saved[key] || "",
+      setItem: (key, value) => {
+        saved[key] = value;
+      },
+    },
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ token: "abc", profile: { name: "Ada", coins: 0 } }),
+      };
+    },
+  });
+  const session = await api.login("Ada", "secret-pass");
+  assert.equal(session.token, "abc");
+  assert.equal(api.token(), "abc");
+  await api.me();
+  assert.equal(calls[1].options.headers.Authorization, "Bearer abc");
+});
+
+test("claim posts run facts without coin totals", async () => {
+  const calls = [];
+  const api = createApi({
+    base: "http://api.test",
+    storage: {
+      getItem: () => "abc",
+      setItem: () => {},
+    },
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ granted: { coins: 1, crystals: 0, xp: 1 }, profile: {} }),
+      };
+    },
+  });
+  await api.claimRun({
+    runId: "run-1",
+    kills: { circle: 1 },
+    wavesCleared: 1,
+    levelsCleared: 0,
+    endedLevel: 1,
+    endedWave: 1,
+    won: false,
+  });
+  const body = JSON.parse(calls[0].options.body);
+  assert.equal(calls[0].url, "http://api.test/runs");
+  assert.equal(body.runId, "run-1");
+  assert.equal(body.kills.circle, 1);
+  assert.equal("coins" in body, false);
+  assert.equal(calls[0].options.headers.Authorization, "Bearer abc");
+});
+
+test("buyShop posts the weapon to /shop", async () => {
+  const calls = [];
+  const api = createApi({
+    base: "http://api.test",
+    storage: {
+      getItem: () => "abc",
+      setItem: () => {},
+    },
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ profile: { crystals: 0 } }) };
+    },
+  });
+  await api.buyShop("weapon", "laser");
+  assert.equal(calls[0].url, "http://api.test/shop");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { kind: "weapon", weapon: "laser" });
+  assert.equal(calls[0].options.headers.Authorization, "Bearer abc");
+});
+
+test("equipPart posts partId to /parts/equip", async () => {
+  const calls = [];
+  const api = createApi({
+    base: "http://api.test",
+    storage: {
+      getItem: () => "abc",
+      setItem: () => {},
+    },
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ profile: {} }) };
+    },
+  });
+  await api.equipPart("p1");
+  assert.equal(calls[0].url, "http://api.test/parts/equip");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { partId: "p1" });
+  assert.equal(calls[0].options.method, "POST");
+});
+
+test("unequipPart posts slot to /parts/unequip", async () => {
+  const calls = [];
+  const api = createApi({
+    base: "http://api.test",
+    storage: {
+      getItem: () => "abc",
+      setItem: () => {},
+    },
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ profile: {} }) };
+    },
+  });
+  await api.unequipPart(3);
+  assert.equal(calls[0].url, "http://api.test/parts/unequip");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { slot: 3 });
+  assert.equal(calls[0].options.method, "POST");
+});
+
+test("devCrystals posts the amount", async () => {
+  const calls = [];
+  const api = createApi({
+    base: "http://api.test",
+    storage: { getItem: () => "abc", setItem: () => {} },
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ profile: {} }) };
+    },
+  });
+  await api.devCrystals(100);
+  assert.equal(calls[0].url, "http://api.test/dev/crystals");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { amount: 100 });
+});
+
+test("devPart posts the rarity", async () => {
+  const calls = [];
+  const api = createApi({
+    base: "http://api.test",
+    storage: { getItem: () => "abc", setItem: () => {} },
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ profile: {} }) };
+    },
+  });
+  await api.devPart("legendary");
+  assert.equal(calls[0].url, "http://api.test/dev/part");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { rarity: "legendary" });
+});
+
+test("rollPart posts the body to /parts/roll", async () => {
+  const calls = [];
+  const api = createApi({
+    base: "http://api.test",
+    storage: {
+      getItem: () => "abc",
+      setItem: () => {},
+    },
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ part: null, profile: {} }) };
+    },
+  });
+  const body = { runId: "r", kind: "level", level: 1 };
+  await api.rollPart(body);
+  assert.equal(calls[0].url, "http://api.test/parts/roll");
+  assert.deepEqual(JSON.parse(calls[0].options.body), body);
+  assert.equal(calls[0].options.method, "POST");
+});
+
+test("guest stores the token from /guest", async () => {
+  const saved = {};
+  const calls = [];
+  const api = createApi({
+    base: "http://api.test",
+    storage: { getItem: (k) => saved[k] || "", setItem: (k, v) => { saved[k] = v; } },
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ token: "g1", profile: { isGuest: true } }) };
+    },
+  });
+  const session = await api.guest();
+  assert.equal(calls[0].url, "http://api.test/guest");
+  assert.equal(session.profile.isGuest, true);
+  assert.equal(api.token(), "g1");
+});
+
+test("saveAccount and analytics events post to their routes", async () => {
+  const calls = [];
+  const api = createApi({
+    base: "http://api.test",
+    storage: { getItem: () => "abc", setItem: () => {} },
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ profile: {} }) };
+    },
+  });
+  await api.saveAccount("Newbie", "secret-pass");
+  await api.runStart({ runId: "r1", level: 1 });
+  await api.runEnd({ runId: "r1", outcome: "died" });
+  assert.equal(calls[0].url, "http://api.test/account/save");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { name: "Newbie", password: "secret-pass" });
+  assert.equal(calls[1].url, "http://api.test/events/run-start");
+  assert.equal(calls[2].url, "http://api.test/events/run-end");
+  assert.equal(JSON.parse(calls[2].options.body).outcome, "died");
+});
